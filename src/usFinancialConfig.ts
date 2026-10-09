@@ -493,12 +493,12 @@ export const US_TAX_CONFIG_BY_YEAR: Record<number, YearTaxConfig> = {
         needsVerification: false,
         value: [
           { threshold: 0, rate: 0.10 },
-          { threshold: 12400, rate: 0.12 },
-          { threshold: 50400, rate: 0.22 },
-          { threshold: 105700, rate: 0.24 },
-          { threshold: 201775, rate: 0.32 },
-          { threshold: 256225, rate: 0.35 },
-          { threshold: 640600, rate: 0.37 },
+          { threshold: 11925, rate: 0.12 },
+          { threshold: 48475, rate: 0.22 },
+          { threshold: 103350, rate: 0.24 },
+          { threshold: 197300, rate: 0.32 },
+          { threshold: 250525, rate: 0.35 },
+          { threshold: 626350, rate: 0.37 },
         ]
       },
       mfj: {
@@ -507,12 +507,12 @@ export const US_TAX_CONFIG_BY_YEAR: Record<number, YearTaxConfig> = {
         needsVerification: false,
         value: [
           { threshold: 0, rate: 0.10 },
-          { threshold: 24800, rate: 0.12 },
-          { threshold: 100800, rate: 0.22 },
-          { threshold: 211400, rate: 0.24 },
-          { threshold: 403550, rate: 0.32 },
-          { threshold: 512450, rate: 0.35 },
-          { threshold: 768700, rate: 0.37 },
+          { threshold: 23850, rate: 0.12 },
+          { threshold: 96950, rate: 0.22 },
+          { threshold: 206700, rate: 0.24 },
+          { threshold: 394600, rate: 0.32 },
+          { threshold: 501050, rate: 0.35 },
+          { threshold: 751600, rate: 0.37 },
         ]
       },
       mfs: {
@@ -521,12 +521,12 @@ export const US_TAX_CONFIG_BY_YEAR: Record<number, YearTaxConfig> = {
         needsVerification: false,
         value: [
           { threshold: 0, rate: 0.10 },
-          { threshold: 12400, rate: 0.12 },
-          { threshold: 50400, rate: 0.22 },
-          { threshold: 105700, rate: 0.24 },
-          { threshold: 201775, rate: 0.32 },
-          { threshold: 256225, rate: 0.35 },
-          { threshold: 384350, rate: 0.37 },
+          { threshold: 11925, rate: 0.12 },
+          { threshold: 48475, rate: 0.22 },
+          { threshold: 103350, rate: 0.24 },
+          { threshold: 197300, rate: 0.32 },
+          { threshold: 250525, rate: 0.35 },
+          { threshold: 375800, rate: 0.37 },
         ]
       },
       hoh: {
@@ -535,12 +535,12 @@ export const US_TAX_CONFIG_BY_YEAR: Record<number, YearTaxConfig> = {
         needsVerification: false,
         value: [
           { threshold: 0, rate: 0.10 },
-          { threshold: 17700, rate: 0.12 },
-          { threshold: 67450, rate: 0.22 },
-          { threshold: 105700, rate: 0.24 },
-          { threshold: 201750, rate: 0.32 },
-          { threshold: 256200, rate: 0.35 },
-          { threshold: 640600, rate: 0.37 },
+          { threshold: 17000, rate: 0.12 },
+          { threshold: 64850, rate: 0.22 },
+          { threshold: 103350, rate: 0.24 },
+          { threshold: 197300, rate: 0.32 },
+          { threshold: 250500, rate: 0.35 },
+          { threshold: 626350, rate: 0.37 },
         ]
       }
     },

@@ -482,6 +482,7 @@ export function calculateLoan(input: {
   originationFeePercent?: number;
   originationFeeFlat?: number;
   feeDeductedFromProceeds?: boolean;
+  feeFinanced?: boolean;
   extraMonthly?: number;
 }) {
   const loanAmount = Math.max(0, input.loanAmount);
@@ -491,12 +492,29 @@ export function calculateLoan(input: {
 
   const feePercent = input.originationFeePercent || 0;
   const feeFlat = input.originationFeeFlat || 0;
-  const fee = roundToCents((loanAmount * (feePercent / 100)) + feeFlat);
 
-  const deducted = input.feeDeductedFromProceeds !== undefined ? input.feeDeductedFromProceeds : true;
+  const feeFinanced = input.feeFinanced || false;
+  const deducted = input.feeDeductedFromProceeds !== undefined ? input.feeDeductedFromProceeds : !feeFinanced;
 
-  const amortizationPrincipal = deducted ? loanAmount : roundToCents(loanAmount + fee);
-  const amountFinanced = deducted ? roundToCents(loanAmount - fee) : loanAmount;
+  let amortizationPrincipal = loanAmount;
+  let amountFinanced = loanAmount;
+  let fee = 0;
+
+  if (feeFinanced) {
+    const netProceeds = loanAmount;
+    const totalLoanAmount = (netProceeds + feeFlat) / Math.max(0.001, 1 - (feePercent / 100));
+    fee = roundToCents(totalLoanAmount * (feePercent / 100) + feeFlat);
+    amortizationPrincipal = roundToCents(totalLoanAmount);
+    amountFinanced = netProceeds;
+  } else if (deducted) {
+    fee = roundToCents((loanAmount * (feePercent / 100)) + feeFlat);
+    amortizationPrincipal = loanAmount;
+    amountFinanced = roundToCents(loanAmount - fee);
+  } else {
+    fee = roundToCents((loanAmount * (feePercent / 100)) + feeFlat);
+    amortizationPrincipal = roundToCents(loanAmount + fee);
+    amountFinanced = loanAmount;
+  }
 
   let monthlyPI = 0;
   if (amortizationPrincipal > 0) {

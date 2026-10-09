@@ -12,6 +12,7 @@ import {
   calculateLoan,
   solveRegulationZ_Apr,
   calculateDebtPayoff,
+  evaluateExpression,
   Debt,
   getStateConfig,
   CalculationError
@@ -205,12 +206,12 @@ console.log('--- 1. INCOME TAX CALCULATOR (5 Test Cases) ---');
   // Gross Income = $60,000
   // Statutory 2026 Single Standard Deduction = $16,100
   // Taxable Income = $60,000 - $16,100 = $43,900
-  // Bracket 1: 10% on first $12,400 = $1,240.00
-  // Bracket 2: 12% on ($43,900 - $12,400 = $31,500) = $3,780.00
-  // Expected Federal Tax = $1,240.00 + $3,780.00 = $5,020.00
+  // Bracket 1: 10% on first $11,925 = $1,192.50
+  // Bracket 2: 12% on ($43,900 - $11,925 = $31,975) = $3,837.00
+  // Expected Federal Tax = $1,192.50 + $3,837.00 = $5,029.50
   assert(res2026Single.federalStandardDeduction === 16100, 'Case 1.9: 2026 Single standard deduction is $16,100', `Got ${res2026Single.federalStandardDeduction}`);
   assert(res2026Single.federalTaxableIncome === 43900, 'Case 1.9: 2026 Taxable income on $60,000 is $43,900', `Got ${res2026Single.federalTaxableIncome}`);
-  assert(res2026Single.federalTax === 5020, 'Case 1.9: 2026 Federal tax on $60,000 Single is $5,020.00', `Got ${res2026Single.federalTax}`);
+  assert(res2026Single.federalTax === 5029.50, 'Case 1.9: 2026 Federal tax on $60,000 Single is $5,029.50', `Got ${res2026Single.federalTax}`);
 }
 
 // Case 1.10: Rule 1 & 2 - 2026 Statutory MFJ ($32,200) and HOH ($24,150) Standard Deductions & Brackets (Rev. Proc. 2025-32)
@@ -225,11 +226,11 @@ console.log('--- 1. INCOME TAX CALCULATOR (5 Test Cases) ---');
   // Gross = $80,000
   // Statutory 2026 MFJ Standard Deduction = $32,200
   // Taxable Income = $80,000 - $32,200 = $47,800
-  // MFJ Brackets: 10% on $24,800 = $2,480.00; 12% on ($47,800 - $24,800 = $23,000) = $2,760.00
-  // Total Federal Tax = $2,480.00 + $2,760.00 = $5,240.00
+  // MFJ Brackets: 10% on $23,850 = $2,385.00; 12% on ($47,800 - $23,850 = $23,950) = $2,874.00
+  // Total Federal Tax = $2,385.00 + $2,874.00 = $5,259.00
   assert(resMfj.federalStandardDeduction === 32200, 'Case 1.10: 2026 MFJ standard deduction is $32,200', `Got ${resMfj.federalStandardDeduction}`);
   assert(resMfj.federalTaxableIncome === 47800, 'Case 1.10: 2026 MFJ taxable income on $80,000 is $47,800', `Got ${resMfj.federalTaxableIncome}`);
-  assert(resMfj.federalTax === 5240, 'Case 1.10: 2026 MFJ federal tax on $80,000 is $5,240.00', `Got ${resMfj.federalTax}`);
+  assert(resMfj.federalTax === 5259, 'Case 1.10: 2026 MFJ federal tax on $80,000 is $5,259.00', `Got ${resMfj.federalTax}`);
 
   const resHoh = calculateComprehensiveTax({
     annualIncome: 50000,
@@ -241,11 +242,11 @@ console.log('--- 1. INCOME TAX CALCULATOR (5 Test Cases) ---');
   // Gross = $50,000
   // Statutory 2026 HOH Standard Deduction = $24,150
   // Taxable Income = $50,000 - $24,150 = $25,850
-  // HOH Brackets: 10% on $17,700 = $1,770.00; 12% on ($25,850 - $17,700 = $8,150) = $978.00
-  // Total Federal Tax = $1,770.00 + $978.00 = $2,748.00
+  // HOH Brackets: 10% on $17,000 = $1,700.00; 12% on ($25,850 - $17,000 = $8,850) = $1,062.00
+  // Total Federal Tax = $1,700.00 + $1,062.00 = $2,762.00
   assert(resHoh.federalStandardDeduction === 24150, 'Case 1.10: 2026 HOH standard deduction is $24,150', `Got ${resHoh.federalStandardDeduction}`);
   assert(resHoh.federalTaxableIncome === 25850, 'Case 1.10: 2026 HOH taxable income on $50,000 is $25,850', `Got ${resHoh.federalTaxableIncome}`);
-  assert(resHoh.federalTax === 2748, 'Case 1.10: 2026 HOH federal tax on $50,000 is $2,748.00', `Got ${resHoh.federalTax}`);
+  assert(resHoh.federalTax === 2762, 'Case 1.10: 2026 HOH federal tax on $50,000 is $2,762.00', `Got ${resHoh.federalTax}`);
 }
 
 // Case 1.11: Rule 1, 2 & 7 - Statutory 2026 Retirement Limits & Verification Status (Notice 2025-67)
@@ -318,7 +319,7 @@ console.log('--- 1. INCOME TAX CALCULATOR (5 Test Cases) ---');
   });
   assert(res2026.federalStandardDeduction === 16100, 'Case 1.12: 2026 Single Standard Deduction is $16,100 per Rev. Proc. 2025-32', `Got ${res2026.federalStandardDeduction}`);
   assert(res2026.federalTaxableIncome === 83900, 'Case 1.12: 2026 Taxable Income on $100,000 is $83,900', `Got ${res2026.federalTaxableIncome}`);
-  assert(res2026.federalTax === 13170, 'Case 1.12: 2026 Federal Tax on $100,000 Single is $13,170.00 (hand-computed)', `Got ${res2026.federalTax}`);
+  assert(res2026.federalTax === 13372, 'Case 1.12: 2026 Federal Tax on $100,000 Single is $13,372.00 (hand-computed)', `Got ${res2026.federalTax}`);
 }
 
 // Case 1.13: Rule 1, 2 & 7 - Standard Deductions per Status and Year (2024, 2025, 2026)
@@ -1319,6 +1320,42 @@ console.log('--- 9. PERSONAL LOAN CALCULATOR & TILA REG Z APR (2 Test Cases) ---
   });
   assert(shortLoan.payoffMonths === 6, 'Case 9.2: 6-month loan successfully repays in 6 months', `Got ${shortLoan.payoffMonths}`);
   assert(shortLoan.schedule.length === 6, 'Case 9.2: 6-month loan schedule has exactly 6 rows');
+}
+
+// Case 9.3: Auto loan sales tax on $30,000 car with $5,000 down and $3,000 trade-in in TX equals 6.25% * ($30,000 - $3,000) = $1,687.50 (NOT subtracted by down payment)
+{
+  const autoTx = calculateAutoLoan({
+    vehiclePrice: 30000,
+    downPayment: 5000,
+    tradeInValue: 3000,
+    stateCode: 'TX',
+    salesTaxPercent: 6.25,
+    titleFees: 0,
+    dealerDocFee: 0,
+    annualRate: 5.0,
+    termMonths: 36
+  });
+  assert(autoTx.taxableBase === 27000, 'Auto loan sales tax base on $30k car with $3k trade-in is $27,000', `Got ${autoTx.taxableBase}`);
+  assert(autoTx.salesTax === 1687.50, 'Auto loan sales tax in TX is $1,687.50 (not reduced by down payment)', `Got ${autoTx.salesTax}`);
+}
+
+// Case 9.4: Personal loan 5% fee financed nets $10,000 exactly with total loan $10,526.32
+{
+  const pl = calculateLoan({
+    loanAmount: 10000,
+    annualRate: 8.0,
+    termYears: 3,
+    originationFeePercent: 5,
+    feeFinanced: true
+  });
+  assert(pl.amountFinanced === 10000, 'Personal loan net proceeds equal $10,000', `Got ${pl.amountFinanced}`);
+  assert(pl.amortizationPrincipal === 10526.32, 'Personal loan total loan amount is $10,526.32', `Got ${pl.amortizationPrincipal}`);
+}
+
+// Case 9.5: Expression evaluator handles "3 + 4 * (2 - 1)" cleanly without eval()
+{
+  const evalRes = evaluateExpression('3 + 4 * (2 - 1)');
+  assert(evalRes === 7, 'Expression evaluator handles "3 + 4 * (2 - 1)" cleanly without eval()', `Got ${evalRes}`);
 }
 
 console.log('');
