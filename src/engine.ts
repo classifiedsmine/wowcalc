@@ -192,36 +192,35 @@ export function solveRegulationZ_AprSeries(
  * ========================================================================== */
 
 export function calculateCompoundInterest(
-  principal: number, 
-  annualRate: number, 
-  years: number, 
-  compoundingsPerYear: number, 
+  principal: number,
+  annualRate: number,
+  years: number,
+  compoundingsPerYear: number,
   monthlyContribution: number = 0
 ) {
-  const r = Math.max(0, annualRate) / 100;
+  if (principal < 0 || annualRate < 0 || years < 0) {
+    throw new Error("Invalid input: Principal, rate, and time must be non-negative.");
+  }
+  const r = annualRate / 100;
   const n = Math.max(1, compoundingsPerYear || 12);
-  const t = Math.max(0.01, years);
+  const t = years;
   const PMT = Math.max(0, monthlyContribution);
 
-  const totalMonths = Math.ceil(t * 12);
-  const monthlyRate = Math.pow(1 + r / n, n / 12) - 1;
-
-  let balance = principal;
-  let totalInvested = principal;
-
-  for (let i = 1; i <= totalMonths; i++) {
-    const interest = balance * monthlyRate;
-    balance += interest + PMT;
-    totalInvested += PMT;
+  // A = P(1 + r/n)^(nt)
+  let balance = 0;
+  if (r === 0) {
+    balance = principal + PMT * 12 * t;
+  } else {
+    balance = principal * Math.pow(1 + r / n, n * t) + PMT * (Math.pow(1 + r / n, n * t) - 1) / (r / n);
   }
 
   // Regulation DD (12 CFR Part 1030) APY formula: APY = 100 * [ (1 + r/n)^n - 1 ]
-  const apy = roundToCents((Math.pow(1 + r / n, n) - 1) * 100);
+  const apy = r === 0 ? 0 : roundToCents((Math.pow(1 + r / n, n) - 1) * 100);
 
   return {
     totalBalance: roundToCents(balance),
-    totalInvested: roundToCents(totalInvested),
-    totalInterest: roundToCents(balance - totalInvested),
+    totalInvested: roundToCents(principal + PMT * 12 * t),
+    totalInterest: roundToCents(balance - (principal + PMT * 12 * t)),
     apy,
     governingRegulation: "Truth in Savings Act (Regulation DD, 12 CFR Part 1030)"
   };
@@ -776,65 +775,36 @@ export function calculateInterest(input: {
   frequency: 1 | 2 | 4 | 12 | 365;
   monthlyDeposit?: number;
 }) {
-  const p = Math.max(0, input.principal);
-  const r = Math.max(0, input.annualRate) / 100;
-  const t = Math.max(0.1, input.years);
+  if (input.principal < 0 || input.annualRate < 0 || input.years < 0) {
+    throw new Error("Invalid input: Principal, rate, and time must be non-negative.");
+  }
+  const p = input.principal;
+  const r = input.annualRate / 100;
+  const t = input.years;
   const pmt = Math.max(0, input.monthlyDeposit || 0);
 
   if (input.type === 'simple') {
     const interest = roundToCents(p * r * t);
     const endBalance = roundToCents(p + interest);
-    const timeline = [];
-    for (let y = 1; y <= Math.ceil(t); y++) {
-      const curYear = Math.min(y, t);
-      timeline.push({
-        year: y,
-        principal: p,
-        interest: roundToCents(p * r * curYear),
-        balance: roundToCents(p + p * r * curYear)
-      });
-    }
     return {
       finalBalance: endBalance,
       totalInterest: interest,
-      totalDeposits: p,
-      apy: roundToCents(input.annualRate),
-      timeline
+      totalDeposits: p + pmt * 12 * t,
+      apy: roundToCents(input.annualRate)
     };
   }
 
   // Compound Interest
   const n = input.frequency || 12;
   const apy = roundToCents((Math.pow(1 + r / n, n) - 1) * 100);
-  let balance = p;
-  let totalDeposited = p;
-  const timeline = [];
-
-  const totalMonths = Math.ceil(t * 12);
-  // Equivalent monthly compounding rate corresponding to nominal annual rate r compounded n times per year
-  const monthlyRate = Math.pow(1 + r / n, n / 12) - 1;
-
-  for (let m = 1; m <= totalMonths; m++) {
-    const interest = balance * monthlyRate;
-    balance += interest + pmt;
-    totalDeposited += pmt;
-
-    if (m % 12 === 0 || m === totalMonths) {
-      timeline.push({
-        year: Math.ceil(m / 12),
-        principal: roundToCents(totalDeposited),
-        interest: roundToCents(balance - totalDeposited),
-        balance: roundToCents(balance)
-      });
-    }
-  }
+  // A = P(1 + r/n)^(nt)
+  const balance = p * Math.pow(1 + r / n, n * t) + pmt * (Math.pow(1 + r / n, n * t) - 1) / (r / n);
 
   return {
     finalBalance: roundToCents(balance),
-    totalInterest: roundToCents(balance - totalDeposited),
-    totalDeposits: roundToCents(totalDeposited),
-    apy,
-    timeline
+    totalInterest: roundToCents(balance - (p + pmt * 12 * t)),
+    totalDeposits: roundToCents(p + pmt * 12 * t),
+    apy
   };
 }
 
@@ -1439,12 +1409,15 @@ export function calculateFinanceTVM(input: {
   annualRate?: number;
   periods?: number;
   solveFor: 'pv' | 'fv' | 'pmt' | 'rate' | 'periods';
+  compoundingFrequency?: number;
+  paymentTiming?: 0 | 1; // 0 = end of period, 1 = beginning
 }) {
-  const r = (input.annualRate || 0) / 100 / 12;
+  const r = (input.annualRate || 0) / 100 / (input.compoundingFrequency || 12);
   const n = input.periods || 12;
   const pv = input.pv || 0;
   const fv = input.fv || 0;
   const pmtVal = input.pmt || 0;
+  const type = input.paymentTiming || 0;
 
   let result = 0;
   switch (input.solveFor) {
@@ -1452,31 +1425,45 @@ export function calculateFinanceTVM(input: {
       if (r === 0) result = -(pv + pmtVal * n);
       else {
         const g = Math.pow(1 + r, n);
-        result = -(pv * g + pmtVal * ((g - 1) / r));
+        result = -(pv * g + pmtVal * (1 + r * type) * ((g - 1) / r));
       }
       break;
     case 'pv':
       if (r === 0) result = -(fv + pmtVal * n);
       else {
         const g = Math.pow(1 + r, n);
-        result = -(fv / g + pmtVal * ((1 - Math.pow(1 + r, -n)) / r));
+        result = -((fv + pmtVal * (1 + r * type) * ((g - 1) / r)) / g);
       }
       break;
     case 'pmt':
       if (r === 0) result = -(pv + fv) / n;
       else {
         const g = Math.pow(1 + r, n);
-        result = -((pv * g + fv) * r) / (g - 1);
+        result = -((pv * g + fv) * r) / ((1 + r * type) * (g - 1));
       }
       break;
     case 'periods':
       if (r === 0) result = pmtVal !== 0 ? -(pv + fv) / pmtVal : 0;
       else {
-        result = Math.log((-fv * r + pmtVal) / (pv * r + pmtVal)) / Math.log(1 + r);
+        // PV * (1+r)^n + PMT*(1+r*type)*((1+r)^n-1)/r + FV = 0
+        // ... (analytical solution for n)
+        result = Math.log(
+          (-fv * r + pmtVal * (1 + r * type)) / (pv * r + pmtVal * (1 + r * type))
+        ) / Math.log(1 + r);
       }
       break;
     case 'rate':
-      result = 0; // handled by Newton solver if needed
+      // Newton-Raphson
+      let i = 0.05; // Initial guess
+      for (let iter = 0; iter < 100; iter++) {
+        const g = Math.pow(1 + i, n);
+        const f = pv * g + pmtVal * (1 + i * type) * ((g - 1) / i) + fv;
+        const df = pv * n * Math.pow(1 + i, n - 1) + 
+                   pmtVal * ((1 + i * type) * ((n * Math.pow(1 + i, n - 1) * i - (Math.pow(1 + i, n) - 1)) / (i * i)) + type * (Math.pow(1 + i, n) - 1) / i);
+        if (Math.abs(f) < 1e-9) break;
+        i -= f / df;
+      }
+      result = i * 100 * (input.compoundingFrequency || 12);
       break;
   }
 
@@ -2185,7 +2172,9 @@ export function calculateDebtPayoff(debts: Debt[], extraMonthly: number, strateg
 export interface RetirementInput {
   currentAge: number;
   currentSavings: number;
-  monthlyContribution: number;
+  monthlyContribution401k: number;
+  monthlyContributionIra: number;
+  monthlyContributionHsa: number;
   annualExpenses: number;
   annualReturn: number;
   inflationRate?: number; // default 2.5%
@@ -2201,15 +2190,36 @@ export interface RetirementInput {
   capitalGainsTaxDrag?: number; // e.g. 0.5% drag on excess
 }
 
-export function calculateRetirement(input: RetirementInput) {
+export function calculateRetirement(input: {
+  currentAge: number;
+  currentSavings: number;
+  monthlyContribution401k: number;
+  monthlyContributionIra: number;
+  monthlyContributionHsa: number;
+  annualExpenses: number;
+  annualReturn: number;
+  inflationRate?: number;
+  returnMode?: 'real' | 'nominal';
+  safeWithdrawalRate?: number;
+  horizonYears?: number;
+  year?: number;
+  filingStatus?: 'single' | 'mfj' | 'mfs' | 'hoh';
+  stateCode?: string;
+  adjustForTaxes?: boolean;
+  useBracketTaxes?: boolean;
+  retirementTaxRatePercent?: number;
+  capitalGainsTaxDrag?: number;
+}) {
   const swr = input.safeWithdrawalRate && input.safeWithdrawalRate > 0 ? input.safeWithdrawalRate : 4;
   const inflation = input.inflationRate !== undefined ? input.inflationRate : 2.5;
   const returnMode = input.returnMode || 'real';
   const horizon = input.horizonYears !== undefined ? input.horizonYears : 30;
   const year = input.year ?? DEFAULT_TAX_YEAR;
 
-  // 1. Validate contributions against annual tax-advantaged limits
-  const taxConfig = US_TAX_CONFIG_BY_YEAR[year] || US_TAX_CONFIG_BY_YEAR[2026];
+  const taxConfig = US_TAX_CONFIG_BY_YEAR[year];
+  if (!taxConfig) {
+    throw new Error(`Unsupported tax year: ${year}`);
+  }
   const limits = taxConfig.retirementLimits;
   const base401k = limits?.elective401kLimit?.value || 24500;
   const catchUp50 = limits?.catchUp401kAge50?.value || 7500;
@@ -2219,19 +2229,16 @@ export function calculateRetirement(input: RetirementInput) {
   const hsaLimit = limits?.hsaSingleLimit?.value || 4300;
 
   const age = input.currentAge;
-  const max401k = base401k + (age >= 60 && age <= 63 ? specialCatchUp60_63 : age >= 50 ? catchUp50 : 0);
-  const maxIra = iraLimit + (age >= 50 ? iraCatchUp : 0);
-  const maxHsa = hsaLimit;
-  const totalAnnualLimit = max401k + maxIra + maxHsa;
-  const maxMonthlyLimit = totalAnnualLimit / 12;
+  const max401k = (base401k + (age >= 60 && age <= 63 ? specialCatchUp60_63 : age >= 50 ? catchUp50 : 0)) / 12;
+  const maxIra = (iraLimit + (age >= 50 ? iraCatchUp : 0)) / 12;
+  const maxHsa = hsaLimit / 12;
 
-  const isOverLimit = input.monthlyContribution > maxMonthlyLimit;
-  const excessMonthly = isOverLimit ? input.monthlyContribution - maxMonthlyLimit : 0;
-  const taxAdvantagedMonthly = isOverLimit ? maxMonthlyLimit : input.monthlyContribution;
-
-  const contributionWarning = isOverLimit
-    ? `Warning: Monthly contribution ($${Math.round(input.monthlyContribution).toLocaleString()}) exceeds combined tax-advantaged limits ($${Math.round(maxMonthlyLimit).toLocaleString()}/mo) for age ${age} in ${year}. Excess ($${Math.round(excessMonthly).toLocaleString()}/mo) flows to a taxable brokerage account.`
-    : null;
+  const validation = {
+    contribution401k: { amount: input.monthlyContribution401k, limit: max401k, over: input.monthlyContribution401k > max401k },
+    contributionIra: { amount: input.monthlyContributionIra, limit: maxIra, over: input.monthlyContributionIra > maxIra },
+    contributionHsa: { amount: input.monthlyContributionHsa, limit: maxHsa, over: input.monthlyContributionHsa > maxHsa }
+  };
+  const totalMonthlyContribution = input.monthlyContribution401k + input.monthlyContributionIra + input.monthlyContributionHsa;
 
   // 2. Taxes (Bracket-based vs Flat)
   let grossAnnualExpenses = input.annualExpenses;
@@ -2270,9 +2277,10 @@ export function calculateRetirement(input: RetirementInput) {
     effectiveAnnualReturn = realR * 100;
   }
 
+  const excessMonthly = Math.max(0, totalMonthlyContribution - (max401k + maxIra + maxHsa));
   const cgDrag = input.capitalGainsTaxDrag || 0;
   if (excessMonthly > 0 && cgDrag > 0) {
-    effectiveAnnualReturn -= (cgDrag * (excessMonthly / input.monthlyContribution));
+    effectiveAnnualReturn -= (cgDrag * (excessMonthly / totalMonthlyContribution));
   }
 
   const monthlyRate = effectiveAnnualReturn / 100 / 12;
@@ -2287,7 +2295,7 @@ export function calculateRetirement(input: RetirementInput) {
 
   while (balance < targetNetWorth && months < 1200) {
     months++;
-    balance += (balance * monthlyRate) + input.monthlyContribution;
+    balance += (balance * monthlyRate) + totalMonthlyContribution;
     
     if (months % 12 === 0) {
       timeline.push({
@@ -2313,6 +2321,10 @@ export function calculateRetirement(input: RetirementInput) {
   const earlyWithdrawalNote = "Early-Withdrawal Rule: Traditional 401(k) / IRA withdrawals prior to age 59½ are subject to ordinary income tax plus a 10% IRS early-withdrawal penalty, unless an exception applies (e.g., Rule 72(t) SEPP, permanent disability, medical expenses above 7.5% AGI, or Roth contribution basis withdrawals).";
   const rmdSocialSecurityNote = "Social Security benefits and Required Minimum Distributions (RMDs starting at age 73/75) are optional inputs and otherwise not modeled in this accumulation engine.";
 
+  const maxMonthlyLimit = max401k + maxIra + maxHsa;
+  const isOverLimit = validation.contribution401k.over || validation.contributionIra.over || validation.contributionHsa.over;
+  const contributionWarning = isOverLimit ? "Contribution exceeds tax-advantaged limits; excess allocated to taxable account." : null;
+
   return {
     targetNetWorth,
     standardTargetNetWorth,
@@ -2335,17 +2347,18 @@ export function calculateRetirement(input: RetirementInput) {
 }
 
 export function evaluateExpression(expression: string, context: Record<string, number> = {}): number {
-  // Safe arithmetic parser supporting +, -, *, /, parentheses, numbers, and variables
+  // Safe arithmetic parser supporting +, -, *, /, ^, parentheses, numbers, and variables
   try {
     const clean = expression.replace(/\s+/g, '');
     let pos = 0;
 
     function parsePrimary(): number {
-      if (pos >= clean.length) return 0;
+      if (pos >= clean.length) throw new Error("Unexpected end of expression");
       if (clean[pos] === '(') {
-        pos++; // consume '('
+        pos++;
         const val = parseAddSub();
-        if (clean[pos] === ')') pos++; // consume ')'
+        if (clean[pos] !== ')') throw new Error("Expected ')'");
+        pos++;
         return val;
       }
       if (clean[pos] === '+') {
@@ -2362,9 +2375,7 @@ export function evaluateExpression(expression: string, context: Record<string, n
         pos++;
       }
       if (pos > start) {
-        const numStr = clean.substring(start, pos);
-        const num = parseFloat(numStr);
-        return isNaN(num) ? 0 : num;
+        return parseFloat(clean.substring(start, pos));
       }
       // Variable name
       start = pos;
@@ -2373,21 +2384,32 @@ export function evaluateExpression(expression: string, context: Record<string, n
       }
       if (pos > start) {
         const varName = clean.substring(start, pos);
-        return context[varName] !== undefined ? context[varName] : 0;
+        if (context[varName] === undefined) throw new Error(`Unknown variable: ${varName}`);
+        return context[varName];
       }
-      return 0;
+      throw new Error("Unexpected character");
+    }
+
+    function parseExp(): number {
+      let val = parsePrimary();
+      while (pos < clean.length && clean[pos] === '^') {
+        pos++;
+        val = Math.pow(val, parsePrimary());
+      }
+      return val;
     }
 
     function parseMulDiv(): number {
-      let val = parsePrimary();
+      let val = parseExp();
       while (pos < clean.length) {
         if (clean[pos] === '*') {
           pos++;
-          val *= parsePrimary();
+          val *= parseExp();
         } else if (clean[pos] === '/') {
           pos++;
-          const divisor = parsePrimary();
-          val = divisor === 0 ? 0 : val / divisor;
+          const divisor = parseExp();
+          if (divisor === 0) throw new Error("Division by zero");
+          val /= divisor;
         } else {
           break;
         }
@@ -2411,8 +2433,11 @@ export function evaluateExpression(expression: string, context: Record<string, n
       return val;
     }
 
-    return parseAddSub();
-  } catch {
+    const result = parseAddSub();
+    if (pos < clean.length) throw new Error("Trailing tokens");
+    return result;
+  } catch (e) {
+    console.error("Expression evaluation failed:", e);
     return 0;
   }
 }

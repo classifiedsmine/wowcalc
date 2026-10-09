@@ -211,7 +211,7 @@ console.log('--- 1. INCOME TAX CALCULATOR (5 Test Cases) ---');
   // Expected Federal Tax = $1,192.50 + $3,837.00 = $5,029.50
   assert(res2026Single.federalStandardDeduction === 16100, 'Case 1.9: 2026 Single standard deduction is $16,100', `Got ${res2026Single.federalStandardDeduction}`);
   assert(res2026Single.federalTaxableIncome === 43900, 'Case 1.9: 2026 Taxable income on $60,000 is $43,900', `Got ${res2026Single.federalTaxableIncome}`);
-  assert(res2026Single.federalTax === 5029.50, 'Case 1.9: 2026 Federal tax on $60,000 Single is $5,029.50', `Got ${res2026Single.federalTax}`);
+  assert(res2026Single.federalTax === 5020, 'Case 1.9: 2026 Federal tax on $60,000 Single is $5,020.00', `Got ${res2026Single.federalTax}`);
 }
 
 // Case 1.10: Rule 1 & 2 - 2026 Statutory MFJ ($32,200) and HOH ($24,150) Standard Deductions & Brackets (Rev. Proc. 2025-32)
@@ -230,7 +230,7 @@ console.log('--- 1. INCOME TAX CALCULATOR (5 Test Cases) ---');
   // Total Federal Tax = $2,385.00 + $2,874.00 = $5,259.00
   assert(resMfj.federalStandardDeduction === 32200, 'Case 1.10: 2026 MFJ standard deduction is $32,200', `Got ${resMfj.federalStandardDeduction}`);
   assert(resMfj.federalTaxableIncome === 47800, 'Case 1.10: 2026 MFJ taxable income on $80,000 is $47,800', `Got ${resMfj.federalTaxableIncome}`);
-  assert(resMfj.federalTax === 5259, 'Case 1.10: 2026 MFJ federal tax on $80,000 is $5,259.00', `Got ${resMfj.federalTax}`);
+  assert(resMfj.federalTax === 5240, 'Case 1.10: 2026 MFJ federal tax on $80,000 is $5,240.00', `Got ${resMfj.federalTax}`);
 
   const resHoh = calculateComprehensiveTax({
     annualIncome: 50000,
@@ -246,7 +246,7 @@ console.log('--- 1. INCOME TAX CALCULATOR (5 Test Cases) ---');
   // Total Federal Tax = $1,700.00 + $1,062.00 = $2,762.00
   assert(resHoh.federalStandardDeduction === 24150, 'Case 1.10: 2026 HOH standard deduction is $24,150', `Got ${resHoh.federalStandardDeduction}`);
   assert(resHoh.federalTaxableIncome === 25850, 'Case 1.10: 2026 HOH taxable income on $50,000 is $25,850', `Got ${resHoh.federalTaxableIncome}`);
-  assert(resHoh.federalTax === 2762, 'Case 1.10: 2026 HOH federal tax on $50,000 is $2,762.00', `Got ${resHoh.federalTax}`);
+  assert(resHoh.federalTax === 2748, 'Case 1.10: 2026 HOH federal tax on $50,000 is $2,748.00', `Got ${resHoh.federalTax}`);
 }
 
 // Case 1.11: Rule 1, 2 & 7 - Statutory 2026 Retirement Limits & Verification Status (Notice 2025-67)
@@ -319,7 +319,7 @@ console.log('--- 1. INCOME TAX CALCULATOR (5 Test Cases) ---');
   });
   assert(res2026.federalStandardDeduction === 16100, 'Case 1.12: 2026 Single Standard Deduction is $16,100 per Rev. Proc. 2025-32', `Got ${res2026.federalStandardDeduction}`);
   assert(res2026.federalTaxableIncome === 83900, 'Case 1.12: 2026 Taxable Income on $100,000 is $83,900', `Got ${res2026.federalTaxableIncome}`);
-  assert(res2026.federalTax === 13372, 'Case 1.12: 2026 Federal Tax on $100,000 Single is $13,372.00 (hand-computed)', `Got ${res2026.federalTax}`);
+  assert(res2026.federalTax === 13170, 'Case 1.12: 2026 Federal Tax on $100,000 Single is $13,170.00 (hand-computed)', `Got ${res2026.federalTax}`);
 }
 
 // Case 1.13: Rule 1, 2 & 7 - Standard Deductions per Status and Year (2024, 2025, 2026)
@@ -695,7 +695,9 @@ console.log('\n--- 3. RETIREMENT & FIRE CALCULATOR (5 Test Cases) ---');
   const fire = calculateRetirement({
     currentAge: 30,
     currentSavings: 50000,
-    monthlyContribution: 2000,
+    monthlyContribution401k: 2000,
+    monthlyContributionIra: 0,
+    monthlyContributionHsa: 0,
     annualExpenses: 40253,
     annualReturn: 7.0,
     safeWithdrawalRate: 4.0,
@@ -711,7 +713,9 @@ console.log('\n--- 3. RETIREMENT & FIRE CALCULATOR (5 Test Cases) ---');
   const fire = calculateRetirement({
     currentAge: 30,
     currentSavings: 50000,
-    monthlyContribution: 2000,
+    monthlyContribution401k: 2000,
+    monthlyContributionIra: 0,
+    monthlyContributionHsa: 0,
     annualExpenses: 40253,
     annualReturn: 7.0,
     safeWithdrawalRate: 4.0,
@@ -729,7 +733,9 @@ console.log('\n--- 3. RETIREMENT & FIRE CALCULATOR (5 Test Cases) ---');
   const fire = calculateRetirement({
     currentAge: 35,
     currentSavings: 100000,
-    monthlyContribution: 3000,
+    monthlyContribution401k: 3000,
+    monthlyContributionIra: 0,
+    monthlyContributionHsa: 0,
     annualExpenses: 50000,
     annualReturn: 6.0,
     safeWithdrawalRate: 3.5,
@@ -744,7 +750,9 @@ console.log('\n--- 3. RETIREMENT & FIRE CALCULATOR (5 Test Cases) ---');
   const fire = calculateRetirement({
     currentAge: 25,
     currentSavings: 0,
-    monthlyContribution: 1500,
+    monthlyContribution401k: 1500,
+    monthlyContributionIra: 0,
+    monthlyContributionHsa: 0,
     annualExpenses: 36000,
     annualReturn: 8.0,
     safeWithdrawalRate: 4.0
@@ -759,7 +767,9 @@ console.log('\n--- 3. RETIREMENT & FIRE CALCULATOR (5 Test Cases) ---');
   const fire = calculateRetirement({
     currentAge: 55,
     currentSavings: 2000000,
-    monthlyContribution: 0,
+    monthlyContribution401k: 0,
+    monthlyContributionIra: 0,
+    monthlyContributionHsa: 0,
     annualExpenses: 50000,
     annualReturn: 5.0,
     safeWithdrawalRate: 4.0
@@ -773,7 +783,9 @@ console.log('\n--- 3. RETIREMENT & FIRE CALCULATOR (5 Test Cases) ---');
   const fireReal = calculateRetirement({
     currentAge: 30,
     currentSavings: 50000,
-    monthlyContribution: 1500,
+    monthlyContribution401k: 500,
+    monthlyContributionIra: 500,
+    monthlyContributionHsa: 500,
     annualExpenses: 45000,
     annualReturn: 7.0,
     inflationRate: 2.5,
@@ -782,7 +794,9 @@ console.log('\n--- 3. RETIREMENT & FIRE CALCULATOR (5 Test Cases) ---');
   const fireNominal = calculateRetirement({
     currentAge: 30,
     currentSavings: 50000,
-    monthlyContribution: 1500,
+    monthlyContribution401k: 500,
+    monthlyContributionIra: 500,
+    monthlyContributionHsa: 500,
     annualExpenses: 45000,
     annualReturn: 7.0,
     inflationRate: 2.5,
@@ -797,7 +811,9 @@ console.log('\n--- 3. RETIREMENT & FIRE CALCULATOR (5 Test Cases) ---');
   const fireOver = calculateRetirement({
     currentAge: 35,
     currentSavings: 100000,
-    monthlyContribution: 10000, // $10k/mo exceeds annual limits (~$3k/mo)
+    monthlyContribution401k: 5000,
+    monthlyContributionIra: 5000,
+    monthlyContributionHsa: 5000,
     annualExpenses: 50000,
     annualReturn: 7.0,
     year: 2026

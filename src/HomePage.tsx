@@ -104,7 +104,9 @@ export function HomePage({
     return calculateRetirement({
       currentAge: quickAge,
       currentSavings: quickSavings,
-      monthlyContribution: quickFireMonthly,
+      monthlyContribution401k: quickFireMonthly / 3, // Assuming equal split
+      monthlyContributionIra: quickFireMonthly / 3,
+      monthlyContributionHsa: quickFireMonthly / 3,
       annualExpenses: quickExpenses,
       annualReturn: 8,
       safeWithdrawalRate: 4

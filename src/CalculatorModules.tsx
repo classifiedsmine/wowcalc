@@ -2857,7 +2857,9 @@ export function RetirementModule({ currency }: { currency: any }) {
   const [params, setParams] = useState({ 
     age: 30, 
     savings: 50000, 
-    monthly: 2000, 
+    monthlyContribution401k: 0,
+    monthlyContributionIra: 0,
+    monthlyContributionHsa: 0, 
     expenses: 40253, 
     return: 7, 
     inflation: 2.5,
@@ -2875,7 +2877,9 @@ export function RetirementModule({ currency }: { currency: any }) {
   const res = useMemo(() => calculateRetirement({ 
     currentAge: params.age, 
     currentSavings: params.savings, 
-    monthlyContribution: params.monthly, 
+    monthlyContribution401k: params.monthlyContribution401k,
+    monthlyContributionIra: params.monthlyContributionIra,
+    monthlyContributionHsa: params.monthlyContributionHsa,
     annualExpenses: params.expenses, 
     annualReturn: params.return, 
     inflationRate: params.inflation,
@@ -2930,7 +2934,9 @@ export function RetirementModule({ currency }: { currency: any }) {
             </div>
 
             <InputGroup label="Current Savings" value={params.savings} prefix={currency.symbol} onChange={(v: number) => setParams({...params, savings: v})} />
-            <InputGroup label="Monthly Invested" value={params.monthly} prefix={currency.symbol} onChange={(v: number) => setParams({...params, monthly: v})} />
+            <InputGroup label="Monthly 401(k) Contribution" value={params.monthlyContribution401k} prefix={currency.symbol} onChange={(v: number) => setParams({...params, monthlyContribution401k: v})} />
+            <InputGroup label="Monthly IRA Contribution" value={params.monthlyContributionIra} prefix={currency.symbol} onChange={(v: number) => setParams({...params, monthlyContributionIra: v})} />
+            <InputGroup label="Monthly HSA Contribution" value={params.monthlyContributionHsa} prefix={currency.symbol} onChange={(v: number) => setParams({...params, monthlyContributionHsa: v})} />
 
             {res.contributionWarning && (
               <div className="p-3 bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-800 dark:text-amber-200 leading-relaxed">
