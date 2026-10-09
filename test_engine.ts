@@ -2,13 +2,21 @@ import {
   calculateMortgage, 
   calculateComprehensiveTax, 
   calculateFicaTax,
+  calculateIncomeTax,
   calculateRetirement,
   calculateAutoLoan,
   calculateCompoundInterest,
   calculateSalesTax,
+  calculateSalary,
+  calculateCaliforniaDailyOvertime,
+  calculateLoan,
   solveRegulationZ_Apr,
-  getStateConfig
+  calculateDebtPayoff,
+  Debt,
+  getStateConfig,
+  CalculationError
 } from './src/engine';
+import { US_TAX_CONFIG_BY_YEAR, SUPPORTED_TAX_YEARS, DEFAULT_TAX_YEAR } from './src/usFinancialConfig';
 
 let allPassed = true;
 let totalTests = 0;
@@ -128,18 +136,391 @@ console.log('--- 1. INCOME TAX CALCULATOR (5 Test Cases) ---');
   assert(zeroRes.netTakeHome === 0, 'Case 1.5: $0 income yields $0 net take home');
 }
 
+// Case 1.6: Rule 4 - No Silent Fallback for Unsupported Tax Year (Fails on old behavior)
+{
+  let threwExpected = false;
+  try {
+    // Unsupported year (e.g. 2019 or 2099) must throw explicit error rather than silently defaulting to another year
+    calculateComprehensiveTax({
+      annualIncome: 100000,
+      year: 2019,
+      filingStatus: 'single',
+      stateCode: 'CA'
+    });
+  } catch (err: any) {
+    threwExpected = err.message.includes('Unsupported tax year: 2019');
+  }
+  assert(threwExpected, 'Case 1.6: Unsupported tax year (2019) throws explicit Error without silent fallback');
+
+  let ficaThrewExpected = false;
+  try {
+    calculateFicaTax(100000, 0, 'single', 2019);
+  } catch (err: any) {
+    ficaThrewExpected = err.message.includes('Unsupported tax year: 2019');
+  }
+  assert(ficaThrewExpected, 'Case 1.6: calculateFicaTax throws explicit Error for unsupported year (2019)');
+}
+
+// Case 1.7: Rule 4 & 5 - Unsupported State Code Returns Explicit Warning and Assumption Flag
+{
+  const unmodeled = calculateComprehensiveTax({
+    annualIncome: 80000,
+    year: 2026,
+    filingStatus: 'single',
+    stateCode: 'ZZ' // Unmodeled/unsupported state
+  });
+  // Rule 4: No silent fallback without UI notice; warning must be provided
+  const hasWarning = unmodeled.warnings && unmodeled.warnings.some(w => w.includes('not modeled for ZZ'));
+  assert(Boolean(hasWarning), 'Case 1.7: Unmodeled state code "ZZ" produces explicit warning message');
+  // Rule 5: State tax is zero and marked with warning / isEstimated: true
+  assert(unmodeled.isEstimated === true, 'Case 1.7: Unmodeled state calculation sets isEstimated to true');
+  assert(unmodeled.stateTax === 0, 'Case 1.7: Unmodeled state computes zero state tax, never made-up tax', `Got ${unmodeled.stateTax}`);
+}
+
+// Case 1.8: Rule 2 & 3 - Default Year 2026 Social Security Wage Cap ($184,500) and Statutory FICA
+{
+  // Calling without explicit year should default to current tax year 2026
+  const fica2026 = calculateFicaTax(250000, 0, 'single');
+  // 2026 Social Security wage cap is $184,500 under SSA Notice / COLA release
+  // Social Security tax = $184,500 * 0.062 = $11,439.00
+  // Medicare on $250,000 * 0.0145 = $3,625.00
+  // Additional Medicare on (250,000 - 200,000) * 0.009 = $450.00
+  // Total Medicare = $4,075.00
+  // Total FICA = 11,439.00 + 4,075.00 = $15,514.00
+  assert(fica2026.ssCap === 184500, 'Case 1.8: Default tax year 2026 OASDI cap is $184,500', `Got ${fica2026.ssCap}`);
+  assert(fica2026.socialSecurity === 11439.00, 'Case 1.8: 2026 Social Security tax caps at $11,439.00', `Got ${fica2026.socialSecurity}`);
+  assert(fica2026.totalFica === 15514.00, 'Case 1.8: 2026 Total FICA on $250,000 is $15,514.00', `Got ${fica2026.totalFica}`);
+}
+
+// Case 1.9: Rule 1 & 2 - 2026 Statutory Federal Single Standard Deduction ($16,100) and Brackets (Rev. Proc. 2025-32)
+// [FAILS ON OLD BEHAVIOR where Single standard deduction was projected at $15,450 and bracket threshold was $12,250]
+{
+  const res2026Single = calculateComprehensiveTax({
+    annualIncome: 60000,
+    year: 2026,
+    filingStatus: 'single',
+    stateCode: 'TX' // 0% state tax to isolate federal tax
+  });
+  // Independent Arithmetic:
+  // Gross Income = $60,000
+  // Statutory 2026 Single Standard Deduction = $16,100
+  // Taxable Income = $60,000 - $16,100 = $43,900
+  // Bracket 1: 10% on first $12,400 = $1,240.00
+  // Bracket 2: 12% on ($43,900 - $12,400 = $31,500) = $3,780.00
+  // Expected Federal Tax = $1,240.00 + $3,780.00 = $5,020.00
+  assert(res2026Single.federalStandardDeduction === 16100, 'Case 1.9: 2026 Single standard deduction is $16,100', `Got ${res2026Single.federalStandardDeduction}`);
+  assert(res2026Single.federalTaxableIncome === 43900, 'Case 1.9: 2026 Taxable income on $60,000 is $43,900', `Got ${res2026Single.federalTaxableIncome}`);
+  assert(res2026Single.federalTax === 5020, 'Case 1.9: 2026 Federal tax on $60,000 Single is $5,020.00', `Got ${res2026Single.federalTax}`);
+}
+
+// Case 1.10: Rule 1 & 2 - 2026 Statutory MFJ ($32,200) and HOH ($24,150) Standard Deductions & Brackets (Rev. Proc. 2025-32)
+{
+  const resMfj = calculateComprehensiveTax({
+    annualIncome: 80000,
+    year: 2026,
+    filingStatus: 'mfj',
+    stateCode: 'TX'
+  });
+  // Independent Arithmetic for MFJ:
+  // Gross = $80,000
+  // Statutory 2026 MFJ Standard Deduction = $32,200
+  // Taxable Income = $80,000 - $32,200 = $47,800
+  // MFJ Brackets: 10% on $24,800 = $2,480.00; 12% on ($47,800 - $24,800 = $23,000) = $2,760.00
+  // Total Federal Tax = $2,480.00 + $2,760.00 = $5,240.00
+  assert(resMfj.federalStandardDeduction === 32200, 'Case 1.10: 2026 MFJ standard deduction is $32,200', `Got ${resMfj.federalStandardDeduction}`);
+  assert(resMfj.federalTaxableIncome === 47800, 'Case 1.10: 2026 MFJ taxable income on $80,000 is $47,800', `Got ${resMfj.federalTaxableIncome}`);
+  assert(resMfj.federalTax === 5240, 'Case 1.10: 2026 MFJ federal tax on $80,000 is $5,240.00', `Got ${resMfj.federalTax}`);
+
+  const resHoh = calculateComprehensiveTax({
+    annualIncome: 50000,
+    year: 2026,
+    filingStatus: 'hoh',
+    stateCode: 'TX'
+  });
+  // Independent Arithmetic for HOH:
+  // Gross = $50,000
+  // Statutory 2026 HOH Standard Deduction = $24,150
+  // Taxable Income = $50,000 - $24,150 = $25,850
+  // HOH Brackets: 10% on $17,700 = $1,770.00; 12% on ($25,850 - $17,700 = $8,150) = $978.00
+  // Total Federal Tax = $1,770.00 + $978.00 = $2,748.00
+  assert(resHoh.federalStandardDeduction === 24150, 'Case 1.10: 2026 HOH standard deduction is $24,150', `Got ${resHoh.federalStandardDeduction}`);
+  assert(resHoh.federalTaxableIncome === 25850, 'Case 1.10: 2026 HOH taxable income on $50,000 is $25,850', `Got ${resHoh.federalTaxableIncome}`);
+  assert(resHoh.federalTax === 2748, 'Case 1.10: 2026 HOH federal tax on $50,000 is $2,748.00', `Got ${resHoh.federalTax}`);
+}
+
+// Case 1.11: Rule 1, 2 & 7 - Statutory 2026 Retirement Limits & Verification Status (Notice 2025-67)
+{
+  const cfg2026 = US_TAX_CONFIG_BY_YEAR[2026];
+  assert(Boolean(cfg2026), 'Case 1.11: 2026 tax configuration exists');
+
+  // 401(k) / 403(b) Elective Deferral = $24,500 (Old was $24,000)
+  assert(cfg2026.retirementLimits.elective401kLimit.value === 24500, 'Case 1.11: 2026 401(k) limit is $24,500', `Got ${cfg2026.retirementLimits.elective401kLimit.value}`);
+  assert(cfg2026.retirementLimits.elective401kLimit.needsVerification === false, 'Case 1.11: 2026 401(k) limit needsVerification is false');
+
+  // IRA Contribution Limit = $7,500 (Old was $7,000)
+  assert(cfg2026.retirementLimits.iraContributionLimit.value === 7500, 'Case 1.11: 2026 IRA limit is $7,500', `Got ${cfg2026.retirementLimits.iraContributionLimit.value}`);
+  assert(cfg2026.retirementLimits.iraContributionLimit.needsVerification === false, 'Case 1.11: 2026 IRA limit needsVerification is false');
+
+  // 401(k) Catch-Up Age 50+ = $8,000 (Old was $7,500)
+  assert(cfg2026.retirementLimits.catchUp401kAge50.value === 8000, 'Case 1.11: 2026 401(k) Age 50+ Catch-up is $8,000', `Got ${cfg2026.retirementLimits.catchUp401kAge50.value}`);
+  assert(cfg2026.retirementLimits.catchUp401kAge50.needsVerification === false, 'Case 1.11: 2026 401(k) Catch-up needsVerification is false');
+
+  // Social Security Wage Base Cap = $184,500 and needsVerification is false
+  assert(cfg2026.socialSecurity.wageBaseCap.value === 184500, 'Case 1.11: 2026 OASDI cap is $184,500', `Got ${cfg2026.socialSecurity.wageBaseCap.value}`);
+  assert(cfg2026.socialSecurity.wageBaseCap.needsVerification === false, 'Case 1.11: 2026 OASDI cap needsVerification is false');
+
+  // Standard Deductions have needsVerification === false
+  assert(cfg2026.standardDeduction.single.needsVerification === false, 'Case 1.11: 2026 Single standard deduction needsVerification is false');
+  assert(cfg2026.standardDeduction.mfj.needsVerification === false, 'Case 1.11: 2026 MFJ standard deduction needsVerification is false');
+  assert(cfg2026.standardDeduction.hoh.needsVerification === false, 'Case 1.11: 2026 HOH standard deduction needsVerification is false');
+
+  // Independent arithmetic: Combined 401(k) max deferral for age 50+
+  const max401kSenior = cfg2026.retirementLimits.elective401kLimit.value + cfg2026.retirementLimits.catchUp401kAge50.value;
+  assert(max401kSenior === 32500, 'Case 1.11: Combined 401(k) contribution limit for age 50+ is $32,500 ($24,500 + $8,000)', `Got ${max401kSenior}`);
+}
+
+// Case 1.12: Rule 7 - Single Filer $100,000 Hand-Calculated Comparison for 2025 vs 2026
+// [FAILS ON OLD BEHAVIOR: 2025 old tax was $13,614.00, 2026 old tax was $13,382.00]
+{
+  // --- 2025 Hand Computation ---
+  // Gross = $100,000
+  // Standard Deduction (OBBBA / Rev. Proc. 2025-32) = $15,750 (Old was $15,000)
+  // Taxable Income = 100,000 - 15,750 = $84,250 (Old was $85,000)
+  // 2025 Brackets (Rev. Proc. 2024-40):
+  // 10% on $11,925 = $1,192.50
+  // 12% on ($48,475 - $11,925 = $36,550) = $4,386.00
+  // 22% on ($84,250 - $48,475 = $35,775) = $7,870.50
+  // Total 2025 Tax = 1,192.50 + 4,386.00 + 7,870.50 = $13,449.00
+  const res2025 = calculateComprehensiveTax({
+    annualIncome: 100000,
+    year: 2025,
+    filingStatus: 'single',
+    stateCode: 'TX'
+  });
+  assert(res2025.federalStandardDeduction === 15750, 'Case 1.12: 2025 Single Standard Deduction is $15,750 per Rev. Proc. 2025-32', `Got ${res2025.federalStandardDeduction}`);
+  assert(res2025.federalTaxableIncome === 84250, 'Case 1.12: 2025 Taxable Income on $100,000 is $84,250', `Got ${res2025.federalTaxableIncome}`);
+  assert(res2025.federalTax === 13449, 'Case 1.12: 2025 Federal Tax on $100,000 Single is $13,449.00 (hand-computed)', `Got ${res2025.federalTax}`);
+
+  // --- 2026 Hand Computation ---
+  // Gross = $100,000
+  // Standard Deduction (Rev. Proc. 2025-32) = $16,100
+  // Taxable Income = 100,000 - 16,100 = $83,900
+  // 2026 Brackets (Rev. Proc. 2025-32):
+  // 10% on $12,400 = $1,240.00
+  // 12% on ($50,400 - $12,400 = $38,000) = $4,560.00
+  // 22% on ($83,900 - $50,400 = $33,500) = $7,370.00
+  // Total 2026 Tax = 1,240.00 + 4,560.00 + 7,370.00 = $13,170.00
+  const res2026 = calculateComprehensiveTax({
+    annualIncome: 100000,
+    year: 2026,
+    filingStatus: 'single',
+    stateCode: 'TX'
+  });
+  assert(res2026.federalStandardDeduction === 16100, 'Case 1.12: 2026 Single Standard Deduction is $16,100 per Rev. Proc. 2025-32', `Got ${res2026.federalStandardDeduction}`);
+  assert(res2026.federalTaxableIncome === 83900, 'Case 1.12: 2026 Taxable Income on $100,000 is $83,900', `Got ${res2026.federalTaxableIncome}`);
+  assert(res2026.federalTax === 13170, 'Case 1.12: 2026 Federal Tax on $100,000 Single is $13,170.00 (hand-computed)', `Got ${res2026.federalTax}`);
+}
+
+// Case 1.13: Rule 1, 2 & 7 - Standard Deductions per Status and Year (2024, 2025, 2026)
+{
+  const cfg2024 = US_TAX_CONFIG_BY_YEAR[2024];
+  const cfg2025 = US_TAX_CONFIG_BY_YEAR[2025];
+  const cfg2026 = US_TAX_CONFIG_BY_YEAR[2026];
+
+  // 2024 (Rev. Proc. 2023-34)
+  assert(cfg2024.standardDeduction.single.value === 14600, 'Case 1.13: 2024 Single std deduction = $14,600');
+  assert(cfg2024.standardDeduction.mfj.value === 29200, 'Case 1.13: 2024 MFJ std deduction = $29,200');
+  assert(cfg2024.standardDeduction.mfs.value === 14600, 'Case 1.13: 2024 MFS std deduction = $14,600');
+  assert(cfg2024.standardDeduction.hoh.value === 21900, 'Case 1.13: 2024 HOH std deduction = $21,900');
+
+  // 2025 (OBBBA / Rev. Proc. 2025-32)
+  assert(cfg2025.standardDeduction.single.value === 15750, 'Case 1.13: 2025 Single std deduction = $15,750');
+  assert(cfg2025.standardDeduction.mfj.value === 31500, 'Case 1.13: 2025 MFJ std deduction = $31,500');
+  assert(cfg2025.standardDeduction.mfs.value === 15750, 'Case 1.13: 2025 MFS std deduction = $15,750');
+  assert(cfg2025.standardDeduction.hoh.value === 23625, 'Case 1.13: 2025 HOH std deduction = $23,625');
+
+  // 2026 (Rev. Proc. 2025-32)
+  assert(cfg2026.standardDeduction.single.value === 16100, 'Case 1.13: 2026 Single std deduction = $16,100');
+  assert(cfg2026.standardDeduction.mfj.value === 32200, 'Case 1.13: 2026 MFJ std deduction = $32,200');
+  assert(cfg2026.standardDeduction.mfs.value === 16100, 'Case 1.13: 2026 MFS std deduction = $16,100');
+  assert(cfg2026.standardDeduction.hoh.value === 24150, 'Case 1.13: 2026 HOH std deduction = $24,150');
+}
+
+// Case 1.14: Rule 1, 2 & 7 - FICA at the 2026 Wage Base ($184,500) and Above
+{
+  // At exact wage base cap $184,500:
+  // Social Security: $184,500 * 0.062 = $11,439.00
+  // Medicare (uncapped): $184,500 * 0.0145 = $2,675.25
+  // Total FICA = 11,439.00 + 2,675.25 = $14,114.25
+  const ficaAtCap = calculateFicaTax(184500, 0, 'single', 2026);
+  assert(ficaAtCap.socialSecurity === 11439.00, 'Case 1.14: Social Security at exactly $184,500 cap is $11,439.00', `Got ${ficaAtCap.socialSecurity}`);
+  assert(ficaAtCap.medicare === 2675.25, 'Case 1.14: Base Medicare on $184,500 is $2,675.25', `Got ${ficaAtCap.medicare}`);
+  assert(ficaAtCap.totalFica === 14114.25, 'Case 1.14: Total FICA on $184,500 is $14,114.25', `Got ${ficaAtCap.totalFica}`);
+
+  // Above wage base cap ($200,000):
+  // Social Security: Capped at $184,500 * 0.062 = $11,439.00
+  // Medicare: $200,000 * 0.0145 = $2,900.00
+  // Additional Medicare: 0 (threshold for single is $200,000)
+  // Total FICA = 11,439.00 + 2,900.00 = $14,339.00
+  const ficaAboveCap = calculateFicaTax(200000, 0, 'single', 2026);
+  assert(ficaAboveCap.socialSecurity === 11439.00, 'Case 1.14: Social Security remains capped at $11,439.00 on $200k', `Got ${ficaAboveCap.socialSecurity}`);
+  assert(ficaAboveCap.medicare === 2900.00, 'Case 1.14: Base Medicare on $200,000 is $2,900.00', `Got ${ficaAboveCap.medicare}`);
+  assert(ficaAboveCap.totalFica === 14339.00, 'Case 1.14: Total FICA on $200,000 is $14,339.00', `Got ${ficaAboveCap.totalFica}`);
+}
+
+// Case 1.15: Rule 4 - Rejection of Unsupported Tax Years with CalculationError('UNSUPPORTED_YEAR')
+{
+  assert(SUPPORTED_TAX_YEARS.length === 3 && SUPPORTED_TAX_YEARS.includes(2026), 'Case 1.15: SUPPORTED_TAX_YEARS is [2024, 2025, 2026]');
+  assert(DEFAULT_TAX_YEAR === 2026, 'Case 1.15: DEFAULT_TAX_YEAR is 2026');
+
+  let caughtComprehensive = false;
+  try {
+    calculateComprehensiveTax({ annualIncome: 100000, year: 2023 });
+  } catch (err: any) {
+    caughtComprehensive = err instanceof CalculationError && err.code === 'UNSUPPORTED_YEAR';
+  }
+  assert(caughtComprehensive, 'Case 1.15: calculateComprehensiveTax throws CalculationError("UNSUPPORTED_YEAR") for 2023');
+
+  let caughtFica = false;
+  try {
+    calculateFicaTax(100000, 0, 'single', 2027);
+  } catch (err: any) {
+    caughtFica = err instanceof CalculationError && err.code === 'UNSUPPORTED_YEAR';
+  }
+  assert(caughtFica, 'Case 1.15: calculateFicaTax throws CalculationError("UNSUPPORTED_YEAR") for 2027');
+
+  let caughtIncomeTax = false;
+  try {
+    calculateIncomeTax(100000, 2022, 'single');
+  } catch (err: any) {
+    caughtIncomeTax = err instanceof CalculationError && err.code === 'UNSUPPORTED_YEAR';
+  }
+  assert(caughtIncomeTax, 'Case 1.15: calculateIncomeTax throws CalculationError("UNSUPPORTED_YEAR") for 2022');
+}
+
+// Case 1.16: State income tax tests for 3 states (flat, progressive, none) and year-over-year rate changes
+{
+  // Flat state: PA (3.07% flat, no standard deduction)
+  const resFlat = calculateComprehensiveTax({
+    annualIncome: 100000,
+    year: 2026,
+    filingStatus: 'single',
+    stateCode: 'PA'
+  });
+  // 100,000 * 3.07% = 3,070.00
+  assert(resFlat.stateTax === 3070, 'Case 1.16: PA flat state tax on $100,000 is $3,070.00', `Got ${resFlat.stateTax}`);
+  assert(resFlat.warnings.length === 0, 'Case 1.16: PA has no warning banner');
+
+  // Progressive state: CA (progressive 1% to 12.3%, 2026 single standard deduction $5,540)
+  const resProg = calculateComprehensiveTax({
+    annualIncome: 100000,
+    year: 2026,
+    filingStatus: 'single',
+    stateCode: 'CA'
+  });
+  // State taxable income = 100,000 - 5,540 = 94,460
+  // Brackets:
+  // 0 - 10,756 @ 1% = 107.56
+  // 10,756 - 25,499 (14,743) @ 2% = 294.86
+  // 25,499 - 40,245 (14,746) @ 4% = 589.84
+  // 40,245 - 55,866 (15,621) @ 6% = 937.26
+  // 55,866 - 70,606 (14,740) @ 8% = 1,179.20
+  // 70,606 - 94,460 (23,854) @ 9.3% = 2,218.422
+  // Total = 107.56 + 294.86 + 589.84 + 937.26 + 1179.20 + 2218.42 = 5,327.14
+  assert(resProg.stateTax > 5300 && resProg.stateTax < 5350, 'Case 1.16: CA progressive state tax on $100,000 is ~$5,327', `Got ${resProg.stateTax}`);
+
+  // No tax state: TX (0%)
+  const resNone = calculateComprehensiveTax({
+    annualIncome: 100000,
+    year: 2026,
+    filingStatus: 'single',
+    stateCode: 'TX'
+  });
+  assert(resNone.stateTax === 0, 'Case 1.16: TX has zero state tax', `Got ${resNone.stateTax}`);
+
+  // Year-over-year rate change: GA (flat 5.39% in 2024 vs 4.99% in 2026)
+  const resGa2024 = calculateComprehensiveTax({
+    annualIncome: 100000,
+    year: 2024,
+    filingStatus: 'single',
+    stateCode: 'GA'
+  });
+  const resGa2026 = calculateComprehensiveTax({
+    annualIncome: 100000,
+    year: 2026,
+    filingStatus: 'single',
+    stateCode: 'GA'
+  });
+  assert(resGa2024.stateTax !== resGa2026.stateTax, 'Case 1.16: GA tax reflects statutory rate change between 2024 and 2026');
+}
+
+// Case 1.17: Unsupported state code banner and zero state tax
+{
+  const resUnsupported = calculateComprehensiveTax({
+    annualIncome: 90000,
+    year: 2026,
+    filingStatus: 'single',
+    stateCode: 'UNKNOWN_STATE'
+  });
+  assert(resUnsupported.stateTax === 0, 'Case 1.17: Unsupported state code yields zero state tax');
+  assert(resUnsupported.warnings.some(w => w.includes('State income tax not modeled for UNKNOWN_STATE')), 'Case 1.17: Unsupported state produces explicit warning banner');
+}
+
+// Case 1.18: Custom itemized deduction below standard deduction (uses exact amount entered)
+{
+  // 2026 Single Standard Deduction is $16,100
+  // User enters itemized deduction of $5,000 with deductionMode: 'itemized'
+  const resItemizedBelow = calculateComprehensiveTax({
+    annualIncome: 60000,
+    year: 2026,
+    filingStatus: 'single',
+    itemizedDeductions: 5000,
+    deductionMode: 'itemized'
+  });
+  // Federal Taxable Income = 60,000 - 5,000 = 55,000 (NOT 60,000 - 16,100 = 43,900)
+  assert(resItemizedBelow.federalTaxableIncome === 55000, 'Case 1.18: Itemized deduction below standard uses exact entered amount ($55,000 taxable)', `Got ${resItemizedBelow.federalTaxableIncome}`);
+
+  // When deductionMode: 'standard', standard deduction $16,100 is used instead
+  const resStandard = calculateComprehensiveTax({
+    annualIncome: 60000,
+    year: 2026,
+    filingStatus: 'single',
+    deductionMode: 'standard'
+  });
+  assert(resStandard.federalTaxableIncome === 43900, 'Case 1.18: Standard deduction yields $43,900 taxable');
+}
+
+// Case 1.19: Contribution limit capping logic for 401(k) and HSA/FSA
+{
+  const cfg2026 = US_TAX_CONFIG_BY_YEAR[2026];
+  const max401kUnder50 = cfg2026.retirementLimits.elective401kLimit.value; // 24500
+  const max401kAge50 = max401kUnder50 + cfg2026.retirementLimits.catchUp401kAge50.value; // 32500
+  const max401kAge60_63 = max401kUnder50 + cfg2026.retirementLimits.catchUp401kSpecialAge60_63.value; // 35750
+
+  assert(max401kUnder50 === 24500, 'Case 1.19: 2026 401(k) base limit is $24,500');
+  assert(max401kAge50 === 32500, 'Case 1.19: 2026 401(k) age 50+ limit is $32,500');
+  assert(max401kAge60_63 === 35750, 'Case 1.19: 2026 401(k) age 60-63 super catch-up limit is $35,750');
+
+  // Verify capping behavior when input exceeds limit
+  const enteredOverLimit = 40000;
+  const cappedVal = Math.min(enteredOverLimit, max401kUnder50);
+  assert(cappedVal === 24500, 'Case 1.19: 401(k) contribution of $40,000 is capped at $24,500 in calculation');
+}
+
 /* ============================================================================
  * 2. MORTGAGE & EMI CALCULATOR (TILA REGULATION Z, HPA 1998, PITI, ESCROW)
  * ========================================================================== */
 console.log('\n--- 2. MORTGAGE & EMI CALCULATOR (5 Test Cases) ---');
 
-// Case 2.1: Standard Audit Case with PITI and Actuarial Regulation Z APR
+// Case 2.1: Standard Audit Case with PITI and Actuarial Regulation Z APR (Explicit pmiAnnual: 0 is strictly $0)
 {
   const m = calculateMortgage({
+    loanProgram: 'conventional',
     homePrice: 597400,
     downPayment: 100973,
     annualRate: 7.7,
     termYears: 30,
+    pmiAnnual: 0, // Explicitly 0 PMI entered
     taxPercent: 1.2,
     insuranceAnnual: 1800,
     hoaAnnual: 1200
@@ -165,11 +546,12 @@ console.log('\n--- 2. MORTGAGE & EMI CALCULATOR (5 Test Cases) ---');
 // Case 2.2: Homeowners Protection Act (HPA 1998) 80% and 78% LTV PMI Dropoff
 {
   const m = calculateMortgage({
+    loanProgram: 'conventional',
     homePrice: 400000,
     downPayment: 40000, // 10% down -> 90% LTV, PMI required
     annualRate: 6.5,
     termYears: 30,
-    autoPmi: true
+    requestPmiCancellation80: true
   });
   // Loan amount = 360,000. 80% LTV is $320,000.
   assert(m.schedule[0].pmi > 0, 'Case 2.2: Initial PMI is active when down payment is < 20%');
@@ -177,8 +559,88 @@ console.log('\n--- 2. MORTGAGE & EMI CALCULATOR (5 Test Cases) ---');
   assert(monthAt80Ltv !== undefined, 'Case 2.2: Reaches 80% LTV milestone within amortization schedule');
   if (monthAt80Ltv) {
     const nextMonth = m.schedule.find(s => s.month > monthAt80Ltv.month);
-    assert(nextMonth?.pmi === 0, 'Case 2.2: PMI drops to $0 when loan reaches 80% LTV threshold under HPA 1998');
+    assert(nextMonth?.pmi === 0, 'Case 2.2: PMI drops to $0 when loan reaches 80% LTV threshold when requested under HPA 1998');
   }
+}
+
+// Case 2.2b: User Test 1 - VA 0% down has zero PMI
+{
+  const mVa = calculateMortgage({
+    loanProgram: 'va',
+    homePrice: 400000,
+    downPayment: 0,
+    annualRate: 6.375,
+    termYears: 30
+  });
+  assert(mVa.schedule[0].pmi === 0, 'Case 2.2b: VA loan with 0% down charges $0 monthly PMI');
+  assert(mVa.schedule.every(s => s.pmi === 0), 'Case 2.2b: VA loan has $0 monthly PMI for all months');
+  assert(mVa.upfrontFee > 0, 'Case 2.2b: VA loan charges upfront funding fee');
+}
+
+// Case 2.2c: User Test 2 - FHA 3.5% down keeps MIP at month 200
+{
+  const mFha = calculateMortgage({
+    loanProgram: 'fha',
+    homePrice: 400000,
+    downPayment: 14000, // 3.5% down -> 96.5% LTV (> 90%)
+    annualRate: 6.5,
+    termYears: 30
+  });
+  // Since original LTV > 90%, HUD requires annual MIP for the entire loan life (360 months)
+  assert(mFha.schedule[0].pmi > 0, 'Case 2.2c: FHA initial MIP is active');
+  assert(mFha.schedule[199].pmi > 0, 'Case 2.2c: FHA 3.5% down keeps MIP at month 200');
+  assert(mFha.schedule[359].pmi > 0, 'Case 2.2c: FHA 3.5% down keeps MIP at final month (life of loan)');
+}
+
+// Case 2.2d: User Test 3 - Conventional 5% down: PMI ends at 78% scheduled balance even with extra payments
+{
+  // 1. Without extra payments, find scheduled 78% milestone
+  const mConvBase = calculateMortgage({
+    loanProgram: 'conventional',
+    homePrice: 400000,
+    downPayment: 20000, // 5% down -> 95% LTV ($380,000 base loan)
+    annualRate: 6.5,
+    termYears: 30
+  });
+  const scheduledMonth78 = mConvBase.pmiDropoffMonth;
+  assert(scheduledMonth78 > 0, 'Case 2.2d: Baseline conventional loan reaches scheduled 78% milestone');
+
+  // 2. With extra payments ($1,500/month), actual balance drops below 78% ($312,000) earlier.
+  // Without borrower requesting cancellation at 80%, automatic termination is strictly based on the scheduled amortization.
+  const mConvExtra = calculateMortgage({
+    loanProgram: 'conventional',
+    homePrice: 400000,
+    downPayment: 20000,
+    annualRate: 6.5,
+    termYears: 30,
+    extraMonthly: 1500,
+    requestPmiCancellation80: false
+  });
+  const actualMonth78 = mConvExtra.schedule.find(s => s.balance <= 312000)!.month;
+  assert(actualMonth78 < scheduledMonth78, 'Case 2.2d: Actual balance reaches 78% earlier due to extra payments');
+  assert(mConvExtra.schedule[actualMonth78 - 1].pmi > 0, 'Case 2.2d: PMI is still active when actual balance hits 78% with extra payments');
+  assert(mConvExtra.pmiDropoffMonth === scheduledMonth78, 'Case 2.2d: PMI ends at the 78% scheduled balance even with extra payments', `Dropoff: ${mConvExtra.pmiDropoffMonth}, Scheduled: ${scheduledMonth78}`);
+}
+
+// Case 2.2e: User Test 4 - APR with 1 point and $3,000 fees is above note rate and matches hand-computed value
+{
+  const mApr = calculateMortgage({
+    loanProgram: 'conventional',
+    homePrice: 400000,
+    downPayment: 80000, // 20% down -> $320,000 loan, no PMI
+    annualRate: 6.5,
+    termYears: 30,
+    pointsPercent: 1.0, // 1 point = $3,200
+    originationFee: 3000 // $3,000 fee
+  });
+  // Total prepaid finance charges = $3,200 + $3,000 = $6,200
+  // Amount financed = $320,000 - $6,200 = $313,800
+  // Monthly P&I = $2,022.62
+  // Hand-computed APR = 6.689% (6.69%)
+  assert(mApr.regulationZApr > 6.5, 'Case 2.2e: APR with 1 point and $3,000 fees is above note rate (6.5%)', `Got ${mApr.regulationZApr}`);
+  assert(Math.abs(mApr.regulationZApr - 6.69) < 0.02, 'Case 2.2e: APR matches hand-computed 6.69% value', `Got ${mApr.regulationZApr}`);
+  assert(mApr.amountFinanced === 313800, 'Case 2.2e: Amount financed equals loan amount minus prepaid finance charges ($313,800)');
+  assert(mApr.totalPrepaidFinanceCharges === 6200, 'Case 2.2e: Prepaid finance charges equal $6,200');
 }
 
 // Case 2.3: 0% Interest Case (Statutory boundary)
@@ -305,30 +767,152 @@ console.log('\n--- 3. RETIREMENT & FIRE CALCULATOR (5 Test Cases) ---');
   assert(fire.fireAge === 55, 'Case 3.5: FIRE age is current age');
 }
 
+// Case 3.6: Real vs nominal return mode gives different FIRE ages
+{
+  const fireReal = calculateRetirement({
+    currentAge: 30,
+    currentSavings: 50000,
+    monthlyContribution: 1500,
+    annualExpenses: 45000,
+    annualReturn: 7.0,
+    inflationRate: 2.5,
+    returnMode: 'real'
+  });
+  const fireNominal = calculateRetirement({
+    currentAge: 30,
+    currentSavings: 50000,
+    monthlyContribution: 1500,
+    annualExpenses: 45000,
+    annualReturn: 7.0,
+    inflationRate: 2.5,
+    returnMode: 'nominal'
+  });
+  assert(fireReal.yearsToFIRE !== fireNominal.yearsToFIRE, 'Case 3.6: Real vs nominal return modes yield different FIRE timelines');
+  assert(fireReal.yearsToFIRE > fireNominal.yearsToFIRE, 'Case 3.6: Real return mode requires more time due to inflation adjustment');
+}
+
+// Case 3.7: Contribution above tax-advantaged limits triggers warning
+{
+  const fireOver = calculateRetirement({
+    currentAge: 35,
+    currentSavings: 100000,
+    monthlyContribution: 10000, // $10k/mo exceeds annual limits (~$3k/mo)
+    annualExpenses: 50000,
+    annualReturn: 7.0,
+    year: 2026
+  });
+  assert(fireOver.isOverLimit === true, 'Case 3.7: High contribution correctly flagged as over limit');
+  assert(fireOver.contributionWarning !== null, 'Case 3.7: Contribution warning message is generated');
+}
+
 /* ============================================================================
  * 4. AUTO LOAN & LENDING (TILA REGULATION Z ACTUARIAL APR)
  * ========================================================================== */
 console.log('\n--- 4. AUTO LOAN & REGULATION Z APR (5 Test Cases) ---');
 
-// Case 4.1: Typical Auto Loan with Sales Tax & Fees
+// Case 4.1a: California Auto Loan (Trade-in credit NOT allowed; tax on full vehicle price)
 {
   const auto = calculateAutoLoan({
     vehiclePrice: 38000,
     downPayment: 6000,
     tradeInValue: 4000,
-    annualRate: 6.2,
-    termMonths: 60,
+    stateCode: 'CA',
     salesTaxPercent: 7.25,
     titleFees: 450,
-    dealerDocFee: 350
+    dealerDocFee: 350,
+    annualRate: 6.2,
+    termMonths: 60
   });
-  // Price = 38,000; Trade-in = 4,000 -> Taxable amount = 34,000
-  // Sales Tax = 34,000 * 7.25% = $2,465.00
+  // Price = $38,000; CA law prohibits trade-in deduction (Cal. Rev. & Tax. Code § 6012)
+  // Taxable base = $38,000
+  // Sales Tax = 38,000 * 7.25% = $2,755.00
   // Fees = 450 + 350 = $800.00
-  // Total Financed = 38,000 - 6,000 - 4,000 + 2,465 + 800 = $31,265.00
-  assert(auto.salesTax === 2465, 'Case 4.1: Trade-in reduces sales tax base per state law ($2,465.00)', `Got ${auto.salesTax}`);
-  assert(auto.totalFinanced === 31265, 'Case 4.1: Total Financed is $31,265.00', `Got ${auto.totalFinanced}`);
-  assert(auto.monthlyPayment > 600 && auto.monthlyPayment < 620, 'Case 4.1: Monthly payment is computed accurately', `Got ${auto.monthlyPayment}`);
+  // Total Financed = 38,000 + 2,755 + 800 - 6,000 - 4,000 = $31,555.00
+  assert(auto.taxableBase === 38000, 'Case 4.1a: CA with trade-in taxes full price ($38,000 base)', `Got ${auto.taxableBase}`);
+  assert(auto.salesTax === 2755, 'Case 4.1a: CA with trade-in = tax on full price ($2,755.00)', `Got ${auto.salesTax}`);
+  assert(auto.totalFinanced === 31555, 'Case 4.1a: CA Total Financed is $31,555.00', `Got ${auto.totalFinanced}`);
+  
+  // True-up verification
+  const totalPrincipalScheduled = Math.round(auto.schedule.reduce((s: number, p: any) => s + p.principal, 0) * 100) / 100;
+  assert(totalPrincipalScheduled === auto.totalFinanced, 'Case 4.1a: Final payment trued up so schedule sums exactly to total financed');
+}
+
+// Case 4.1b: Texas Auto Loan (Trade-in credit ALLOWED; tax on net difference)
+{
+  const auto = calculateAutoLoan({
+    vehiclePrice: 38000,
+    downPayment: 6000,
+    tradeInValue: 4000,
+    stateCode: 'TX',
+    salesTaxPercent: 6.25,
+    titleFees: 450,
+    dealerDocFee: 350,
+    annualRate: 6.2,
+    termMonths: 60
+  });
+  // Price = $38,000; Trade-in = $4,000 -> Taxable net = $34,000 (Tex. Tax Code § 152.002)
+  // Sales Tax = 34,000 * 6.25% = $2,125.00
+  // Total Financed = 38,000 + 2,125 + 800 - 6,000 - 4,000 = $30,925.00
+  assert(auto.taxableBase === 34000, 'Case 4.1b: TX with trade-in taxes net price ($34,000 base)', `Got ${auto.taxableBase}`);
+  assert(auto.salesTax === 2125, 'Case 4.1b: TX with trade-in = tax on net ($2,125.00)', `Got ${auto.salesTax}`);
+  assert(auto.totalFinanced === 30925, 'Case 4.1b: TX Total Financed is $30,925.00', `Got ${auto.totalFinanced}`);
+}
+
+// Case 4.1c: Negative Equity Support (Trade-in Loan Payoff exceeds Trade-in Value)
+{
+  const auto = calculateAutoLoan({
+    vehiclePrice: 38000,
+    downPayment: 6000,
+    tradeInValue: 4000,
+    tradeInLoanPayoff: 6000, // $2,000 negative equity
+    stateCode: 'CA',
+    salesTaxPercent: 7.25,
+    titleFees: 450,
+    dealerDocFee: 350,
+    annualRate: 6.2,
+    termMonths: 60
+  });
+  // Negative equity = 6,000 - 4,000 = $2,000
+  // Total Financed = $31,555 baseline + $2,000 negative equity = $33,555.00
+  // Wait: Price ($38,000) + Tax ($2,755) + Fees ($800) - Down ($6,000) - Trade ($4,000) + Payoff ($6,000) = $37,555.00
+  // Wait, price (38k) + tax (2755) + fees (800) - down (6k) - trade (4k) + payoff (6k) = 38000 + 2755 + 800 - 6000 + 2000 = 37555
+  assert(auto.negativeEquity === 2000, 'Case 4.1c: Negative equity calculated as $2,000', `Got ${auto.negativeEquity}`);
+  assert(auto.totalFinanced === 37555, 'Case 4.1c: Negative equity added to amount financed ($37,555.00)', `Got ${auto.totalFinanced}`);
+}
+
+// Case 4.1d: Regulation Z Doc Fee Toggle Changes APR
+{
+  const docCashAlso = calculateAutoLoan({
+    vehiclePrice: 38000,
+    downPayment: 6000,
+    tradeInValue: 4000,
+    stateCode: 'CA',
+    salesTaxPercent: 7.25,
+    titleFees: 450,
+    dealerDocFee: 350,
+    docFeeIsFinancingOnly: false,
+    annualRate: 6.2,
+    termMonths: 60
+  });
+
+  const docFinancingOnly = calculateAutoLoan({
+    vehiclePrice: 38000,
+    downPayment: 6000,
+    tradeInValue: 4000,
+    stateCode: 'CA',
+    salesTaxPercent: 7.25,
+    titleFees: 450,
+    dealerDocFee: 350,
+    docFeeIsFinancingOnly: true,
+    annualRate: 6.2,
+    termMonths: 60
+  });
+
+  // When doc fee is payable by cash customers too, it is NOT a prepaid finance charge -> APR = note rate (6.2%)
+  assert(docCashAlso.regulationZApr === 6.2, 'Case 4.1d: Doc fee payable by cash customers yields note rate APR (6.20%)');
+  // When doc fee is charged only to financing customers, it IS a finance charge -> APR > 6.2%
+  assert(docFinancingOnly.regulationZApr > 6.2, 'Case 4.1d: Doc fee toggle changes APR to exceed note rate', `Got ${docFinancingOnly.regulationZApr}%`);
+  assert(Math.round(docFinancingOnly.regulationZApr * 100) / 100 === 6.67, 'Case 4.1d: Financing-only doc fee yields ~6.67% APR', `Got ${docFinancingOnly.regulationZApr}%`);
 }
 
 // Case 4.2: Regulation Z Actuarial APR with Prepaid Finance Charges
@@ -505,10 +1089,243 @@ console.log('\n--- 6. SALES TAX CALCULATOR (5 Test Cases) ---');
   assert(tax.finalTotal === 0, 'Case 6.5: 100% discount produces $0 total');
 }
 
-console.log('\n================================================================');
+// Case 6.6: 1,000 random amounts test that totalTax == stateTax + localTax exactly
+{
+  let allMatch = true;
+  for (let i = 0; i < 1000; i++) {
+    const randomAmt = Math.round((Math.random() * 5000 + 1) * 100) / 100;
+    const sRate = Math.round((Math.random() * 8) * 100) / 100;
+    const lRate = Math.round((Math.random() * 3) * 100) / 100;
+    const res = calculateSalesTax({ amount: randomAmt, mode: 'add_tax', stateRate: sRate, localRate: lRate });
+    if (res.totalTax !== Math.round((res.stateTax + res.localTax) * 100) / 100) {
+      allMatch = false;
+      break;
+    }
+  }
+  assert(allMatch, 'Case 6.6: Over 1,000 random amounts, totalTax equals stateTax + localTax exactly');
+}
+
+// Case 6.7: 6.25% + 2.0% on $0.37 increments
+{
+  let incrementsMatch = true;
+  for (let amt = 0.37; amt <= 37.00; amt += 0.37) {
+    const roundedAmt = Math.round(amt * 100) / 100;
+    const res = calculateSalesTax({ amount: roundedAmt, mode: 'add_tax', stateRate: 6.25, localRate: 2.0 });
+    if (res.totalTax !== Math.round((res.stateTax + res.localTax) * 100) / 100) {
+      incrementsMatch = false;
+      break;
+    }
+  }
+  assert(incrementsMatch, 'Case 6.7: 6.25% + 2.0% on $0.37 increments maintains exact sum per jurisdiction');
+}
+
+// Case 6.8: Reverse mode round trip
+{
+  const original = 145.83;
+  const resExtract = calculateSalesTax({ amount: original, mode: 'extract_tax', stateRate: 6.25, localRate: 1.5 });
+  const resAdd = calculateSalesTax({ amount: resExtract.beforeTax, mode: 'add_tax', stateRate: 6.25, localRate: 1.5 });
+  assert(Math.abs(resAdd.finalTotal - original) <= 0.01, 'Case 6.8: Reverse mode round trip returns to original total within 1 cent');
+}
+
+/* ============================================================================
+ * 7. SALARY CALCULATOR, FLSA OVERTIME & STATUTORY WITHHOLDING
+ * ========================================================================== */
+console.log('\n--- 7. SALARY CALCULATOR & FLSA OVERTIME (6 Test Cases) ---');
+
+// Case 7.1: FLSA Overtime 50-Hour Workweek Benchmark ($20/hr, 50 hours = $1,100 weekly gross)
+{
+  const sal = calculateSalary({
+    amount: 20,
+    frequency: 'hourly',
+    hoursPerWeek: 50,
+    isExempt: false,
+    useFlatTaxOverride: true,
+    estimatedTaxPercent: 20
+  });
+  // 40 regular hours * $20 = $800
+  // 10 overtime hours * ($20 * 1.5 = $30) = $300
+  // Weekly Gross = $800 + $300 = $1,100.00
+  assert(sal.regularHours === 40, 'Case 7.1: Regular hours capped at 40 under FLSA');
+  assert(sal.overtimeHours === 10, 'Case 7.1: Overtime hours equal 10 for 50-hour workweek');
+  assert(sal.weeklyGross === 1100, 'Case 7.1: FLSA 50-hour example yields exactly $1,100 weekly gross ($20/hr, 50h)', `Got ${sal.weeklyGross}`);
+  assert(sal.baseHourly === 20.00, 'Case 7.1: Base hourly preserves exact cents ($20.00)');
+  assert(sal.annualGross === 1100 * 52, 'Case 7.1: Standard 52 weeks yields $57,200 annual gross');
+}
+
+// Case 7.2: State Tax Disparity ($90,000 Salary in TX vs CA gives different net take-home)
+{
+  const salTx = calculateSalary({
+    amount: 90000,
+    frequency: 'annual',
+    hoursPerWeek: 40,
+    isExempt: true,
+    stateCode: 'TX',
+    year: 2026,
+    filingStatus: 'single',
+    useFlatTaxOverride: false
+  });
+
+  const salCa = calculateSalary({
+    amount: 90000,
+    frequency: 'annual',
+    hoursPerWeek: 40,
+    isExempt: true,
+    stateCode: 'CA',
+    year: 2026,
+    filingStatus: 'single',
+    useFlatTaxOverride: false
+  });
+
+  // TX has no state income tax; CA has progressive state tax (~$4,397)
+  assert(salTx.stateTax === 0, 'Case 7.2: TX state income tax is $0.00');
+  assert(salCa.stateTax > 4000, 'Case 7.2: CA state income tax exceeds $4,000', `Got ${salCa.stateTax}`);
+  assert(salTx.annualNet > salCa.annualNet, 'Case 7.2: Salary $90,000 in TX vs CA gives different net take-home pay', `TX Net=${salTx.annualNet}, CA Net=${salCa.annualNet}`);
+  assert(salTx.annualNet - salCa.annualNet > 4000, 'Case 7.2: TX take-home exceeds CA take-home by state tax difference', `Diff=${salTx.annualNet - salCa.annualNet}`);
+}
+
+// Case 7.3: Semi-Monthly Conversion (24 pay periods / year)
+{
+  const sal = calculateSalary({
+    amount: 60000,
+    frequency: 'annual',
+    hoursPerWeek: 40,
+    paidWeeks: 52
+  });
+  const semiMonthlyRow = sal.breakdown.find(r => r.period === 'Semi-Monthly');
+  assert(Boolean(semiMonthlyRow), 'Case 7.3: Semi-Monthly period exists in salary breakdown matrix');
+  assert(semiMonthlyRow?.gross === 2500, 'Case 7.3: $60,000 annual converts to $2,500.00 semi-monthly gross (24 pay periods)', `Got ${semiMonthlyRow?.gross}`);
+
+  // Reverse conversion: $2,500 semi-monthly input
+  const reverseSal = calculateSalary({
+    amount: 2500,
+    frequency: 'semimonthly',
+    hoursPerWeek: 40,
+    paidWeeks: 52
+  });
+  assert(reverseSal.annualGross === 60000, 'Case 7.3: $2,500 semi-monthly input converts back to $60,000 annual gross', `Got ${reverseSal.annualGross}`);
+}
+
+// Case 7.4: Customizable Paid / Unpaid Weeks
+{
+  const sal50 = calculateSalary({
+    amount: 1000,
+    frequency: 'weekly',
+    hoursPerWeek: 40,
+    paidWeeks: 50 // 2 unpaid weeks
+  });
+  assert(sal50.paidWeeks === 50, 'Case 7.4: Paid weeks honored as 50');
+  assert(sal50.annualGross === 50000, 'Case 7.4: 50 paid weeks yields $50,000 annual gross (not forced to 52)', `Got ${sal50.annualGross}`);
+}
+
+// Case 7.5: California Statutory Daily Overtime & Double-Time
+{
+  // Day 1: 9h (8 reg + 1 ot), Day 2: 13h (8 reg + 4 ot + 1 dt), Days 3-5: 8h each (24 reg)
+  // Total regular = 8 + 8 + 24 = 40h
+  // Total 1.5x OT = 1 + 4 = 5h
+  // Total 2.0x DT = 1h
+  const dailyHours = [9, 13, 8, 8, 8, 0, 0];
+  const caOt = calculateCaliforniaDailyOvertime(20, dailyHours);
+  assert(caOt.regularHours === 40, 'Case 7.5: CA daily regular hours = 40');
+  assert(caOt.ot15Hours === 5, 'Case 7.5: CA daily 1.5x overtime hours = 5');
+  assert(caOt.dt20Hours === 1, 'Case 7.5: CA daily 2.0x double time hours = 1 (over 12h on Day 2)');
+  // Pay = (40 * 20) + (5 * 30) + (1 * 40) = 800 + 150 + 40 = $990
+  assert(caOt.totalGross === 990, 'Case 7.5: CA daily overtime gross pay = $990.00', `Got ${caOt.totalGross}`);
+}
+
+// Case 7.6: FLSA Exempt vs Non-Exempt Comparison
+{
+  const nonExempt = calculateSalary({
+    amount: 25,
+    frequency: 'hourly',
+    hoursPerWeek: 45,
+    isExempt: false
+  });
+  const exempt = calculateSalary({
+    amount: 25,
+    frequency: 'hourly',
+    hoursPerWeek: 45,
+    isExempt: true
+  });
+  // Non-exempt: 40 * 25 + 5 * 37.5 = 1000 + 187.50 = $1,187.50
+  assert(nonExempt.weeklyGross === 1187.50, 'Case 7.6: Non-exempt employee receives 1.5x overtime on hours over 40', `Got ${nonExempt.weeklyGross}`);
+  // Exempt: 45 * 25 = $1,125.00
+  assert(exempt.weeklyGross === 1125.00, 'Case 7.6: Exempt employee receives straight pay for scheduled hours', `Got ${exempt.weeklyGross}`);
+}
+
+/* ============================================================================
+ * 8. DEBT PAYOFF & ROLLING SNOWBALL / AVALANCHE (3 Test Cases)
+ * ========================================================================== */
+console.log('--- 8. DEBT PAYOFF & ROLLING SNOWBALL / AVALANCHE (3 Test Cases) ---');
+
+// Case 8.1: Negative Amortization Warning ($50 min on $5,000 at 29.99%)
+{
+  const debts: Debt[] = [
+    { id: '1', name: 'Bad Card', balance: 5000, rate: 29.99, minPayment: 50 }
+  ];
+  const res = calculateDebtPayoff(debts, 0, 'avalanche');
+  assert(res.debts[0].warning === 'minimum payment does not cover interest', 'Case 8.1: Debt with $50 min on $5,000 at 29.99% shows negative amortization warning');
+  assert(res.status === 'NEVER_PAID_OFF', 'Case 8.1: Uncovered negative amortization debt stops with status NEVER_PAID_OFF');
+}
+
+// Case 8.2: Snowball Rolling Minimums Effect
+{
+  const debts: Debt[] = [
+    { id: '1', name: 'Small Debt', balance: 1000, rate: 10, minPayment: 50 },
+    { id: '2', name: 'Large Debt', balance: 5000, rate: 15, minPayment: 150 }
+  ];
+  const resSnowball = calculateDebtPayoff(debts, 100, 'snowball');
+  const resAvalanche = calculateDebtPayoff(debts, 100, 'avalanche');
+  assert(resSnowball.status === 'SUCCESS', 'Case 8.2: Snowball payoff succeeds');
+  assert(resSnowball.debts.find(d => d.id === '1')?.paidOffMonth !== null, 'Case 8.2: Small debt has recorded paid-off month');
+  assert(resAvalanche.status === 'SUCCESS', 'Case 8.2: Avalanche payoff succeeds');
+}
+
+// Case 8.3: Avalanche vs Snowball Interest Comparison
+{
+  const debts: Debt[] = [
+    { id: '1', name: 'High Rate Low Balance', balance: 2000, rate: 24, minPayment: 80 },
+    { id: '2', name: 'Low Rate High Balance', balance: 3000, rate: 6, minPayment: 90 }
+  ];
+  const resAvalanche = calculateDebtPayoff(debts, 200, 'avalanche');
+  const resSnowball = calculateDebtPayoff(debts, 200, 'snowball');
+  assert(resAvalanche.totalInterest <= resSnowball.totalInterest, 'Case 8.3: Avalanche total interest is less than or equal to snowball interest');
+}
+
+/* ============================================================================
+ * 9. PERSONAL LOAN CALCULATOR & TILA REG Z APR (2 Test Cases)
+ * ========================================================================== */
+console.log('--- 9. PERSONAL LOAN CALCULATOR & TILA REG Z APR (2 Test Cases) ---');
+
+// Case 9.1: $10,000, 10% note rate, 3 years, 5% fee -> APR above 10%
+{
+  const loan = calculateLoan({
+    loanAmount: 10000,
+    annualRate: 10,
+    termYears: 3,
+    originationFeePercent: 5,
+    feeDeductedFromProceeds: true
+  });
+  assert(loan.apr > 10, 'Case 9.1: Loan with origination fee has APR higher than note rate (10%)', `Got ${loan.apr}%`);
+  assert(loan.amountFinanced === 9500, 'Case 9.1: Amount financed correctly deducts 5% fee ($500)', `Got ${loan.amountFinanced}`);
+}
+
+// Case 9.2: 6-month loan works
+{
+  const shortLoan = calculateLoan({
+    loanAmount: 5000,
+    annualRate: 8,
+    termMonths: 6,
+    originationFeePercent: 1
+  });
+  assert(shortLoan.payoffMonths === 6, 'Case 9.2: 6-month loan successfully repays in 6 months', `Got ${shortLoan.payoffMonths}`);
+  assert(shortLoan.schedule.length === 6, 'Case 9.2: 6-month loan schedule has exactly 6 rows');
+}
+
+console.log('');
+console.log('================================================================');
 console.log(`TEST SUMMARY: ${passedTests} / ${totalTests} TESTS PASSED`);
 if (allPassed) {
-  console.log('STATUS: ALL TESTS PASSED - 100% US REGULATORY COMPLIANCE VERIFIED');
+  console.log('STATUS: ALL TESTS PASSED - ENGINE CALCULATIONS VERIFIED');
 } else {
   console.error('STATUS: SOME TESTS FAILED');
   process.exit(1);

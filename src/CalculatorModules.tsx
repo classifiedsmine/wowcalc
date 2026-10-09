@@ -2,11 +2,11 @@ import React, { useState, useEffect, useMemo, useId } from 'react';
 import { 
   Wallet, Briefcase, Landmark, RefreshCw, Zap, Calculator, TrendingUp, Compass, 
   CircleDollarSign, ShieldAlert, DollarSign, ArrowRight, ChevronDown, ChevronUp, 
-  Percent, CheckCircle2, Calendar
+  Percent, CheckCircle2, Calendar, Info
 } from 'lucide-react';
 import { 
   PieChart as RePieChart, Pie, Cell, ResponsiveContainer, Tooltip as ReTooltip, 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, AreaChart, Area 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, AreaChart, Area, Line 
 } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -25,8 +25,15 @@ import {
   calculateComprehensiveTax,
   calculateCompoundInterest,
   calculateMortgage,
+  calculateRetirement,
+  calculateCaliforniaDailyOvertime,
+  US_STATE_OVERTIME_RULES,
   solveRegulationZ_Apr,
+  US_AUTO_SALES_TAX_LIST,
+  type AutoStateTaxConfig,
   US_TAX_CONFIG_BY_YEAR,
+  SUPPORTED_TAX_YEARS,
+  DEFAULT_TAX_YEAR,
   US_STATE_TAX_CONFIGS,
   US_STATE_LIST,
   getStateConfig,
@@ -68,6 +75,25 @@ export const MetricCard = ({ label, value, subtext, icon: Icon, color }: any) =>
     </div>
   </div>
 );
+
+export function CalculatorDisclaimer() {
+  return (
+    <div className="mt-8 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 p-4 text-xs text-amber-900 dark:text-amber-200 leading-relaxed shadow-xs">
+      <div className="flex items-center gap-2 font-bold uppercase tracking-wider mb-1">
+        <svg className="w-4 h-4 text-amber-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        </svg>
+        <span>Disclaimer & Assumptions (Tax Year 2026)</span>
+      </div>
+      <p className="mb-1">
+        Results are estimates for informational purposes only and do not constitute professional tax, legal, financial, or insurance advice.
+      </p>
+      <p>
+        Calculations assume Tax Year 2026 rules and standard modeling parameters. See <a href="/docs/ASSUMPTIONS.md" target="_blank" rel="noreferrer" className="underline font-semibold hover:text-amber-950 dark:hover:text-amber-100">docs/ASSUMPTIONS.md</a> for detailed defaults, preset rates, and methodology assumptions. Actual outcomes vary based on individual financial circumstances and lender agreements.
+      </p>
+    </div>
+  );
+}
 
 export const InputGroup = ({ label, value, onChange, min, step, prefix, suffix, type = "number", id: customId, placeholder }: any) => {
   const generatedId = useId();
@@ -404,19 +430,24 @@ export function LoanCalculatorModule({ currency }: { currency: any }) {
   const [params, setParams] = useState({
     amount: 25000,
     rate: 8.5,
-    termYears: 5,
+    termValue: 5,
+    termUnit: 'years' as 'years' | 'months',
     originationFee: 1.5,
+    feeDeducted: true,
     extraMonthly: 0
   });
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  const termMonths = params.termUnit === 'years' ? params.termValue * 12 : params.termValue;
+
   const res = useMemo(() => calculateLoan({
     loanAmount: params.amount,
     annualRate: params.rate,
-    termYears: params.termYears,
+    termMonths,
     originationFeePercent: params.originationFee,
+    feeDeductedFromProceeds: params.feeDeducted,
     extraMonthly: params.extraMonthly
-  }), [params]);
+  }), [params, termMonths]);
 
   const format = (v: number) => `${currency.symbol}${new Intl.NumberFormat().format(Math.round(v))}`;
 
@@ -435,15 +466,67 @@ export function LoanCalculatorModule({ currency }: { currency: any }) {
               <Wallet size={20} className="text-indigo-600 dark:text-indigo-400" aria-hidden="true" /> Loan Setup
             </h3>
             <InputGroup label="Loan Amount" value={params.amount} prefix={currency.symbol} onChange={(v: number) => setParams({...params, amount: v})} />
-            <div className="grid grid-cols-2 gap-4">
-              <InputGroup label="Interest Rate" value={params.rate} suffix="%" step="0.1" onChange={(v: number) => setParams({...params, rate: v})} />
-              <InputGroup label="Term" value={params.termYears} suffix="yrs" onChange={(v: number) => setParams({...params, termYears: v})} />
+            
+            <InputGroup 
+              label="Interest rate (note rate)" 
+              value={params.rate} 
+              suffix="%" 
+              step="0.1" 
+              onChange={(v: number) => setParams({...params, rate: v})} 
+            />
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              The annual note rate used to calculate scheduled P&amp;I payments. APR is calculated separately and includes upfront origination fees.
+            </p>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Loan Term</label>
+              <div className="flex gap-2">
+                <input 
+                  type="number" 
+                  min="1"
+                  className="w-full px-3 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl font-mono text-sm text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700" 
+                  value={params.termValue} 
+                  onChange={e => setParams({...params, termValue: Math.max(1, parseInt(e.target.value) || 1)}) } 
+                />
+                <select 
+                  className="px-3 py-2 bg-slate-100 dark:bg-slate-800 rounded-xl font-bold text-xs text-slate-900 dark:text-white border border-slate-200 dark:border-slate-700"
+                  value={params.termUnit}
+                  onChange={e => setParams({...params, termUnit: e.target.value as 'years' | 'months'})}
+                >
+                  <option value="years">Years</option>
+                  <option value="months">Months</option>
+                </select>
+              </div>
             </div>
 
             <AdvancedToggle isOpen={showAdvanced} onToggle={() => setShowAdvanced(!showAdvanced)} />
             {showAdvanced && (
               <div className="space-y-4 pt-2 border-t border-slate-200 dark:border-slate-700">
-                <InputGroup label="Origination Fee" value={params.originationFee} suffix="%" step="0.25" onChange={(v: number) => setParams({...params, originationFee: v})} />
+                <InputGroup label="Origination Fee (%)" value={params.originationFee} suffix="%" step="0.25" onChange={(v: number) => setParams({...params, originationFee: v})} />
+                
+                <div className="space-y-2">
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Fee Handling (TILA Reg Z)</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setParams({...params, feeDeducted: true})}
+                      className={`px-3 py-2 text-xs font-bold rounded-xl border transition-colors ${params.feeDeducted ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}
+                    >
+                      Fee deducted from proceeds
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setParams({...params, feeDeducted: false})}
+                      className={`px-3 py-2 text-xs font-bold rounded-xl border transition-colors {!params.feeDeducted ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}
+                    >
+                      Fee added to loan
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {params.feeDeducted ? 'Fee is withheld from proceeds (Amount Financed < Loan Amount).' : 'Fee is financed into the loan principal.'}
+                  </p>
+                </div>
+
                 <InputGroup label="Extra Monthly Pay" value={params.extraMonthly} prefix={currency.symbol} onChange={(v: number) => setParams({...params, extraMonthly: v})} />
               </div>
             )}
@@ -451,8 +534,9 @@ export function LoanCalculatorModule({ currency }: { currency: any }) {
         </div>
 
         <div className="lg:col-span-8 space-y-8">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
             <MetricCard label="Monthly Payment" value={format(res.monthlyPayment)} subtext="Standard P&I per month" icon={Wallet} color="bg-indigo-600" />
+            <MetricCard label="Interest Rate / APR" value={`${res.annualRate.toFixed(2)}%`} subtext={`Calculated APR: ${res.apr.toFixed(2)}%`} icon={Landmark} color="bg-purple-600" />
             <MetricCard label="Total Interest" value={format(res.totalInterest)} subtext="Total interest paid" icon={Landmark} color="bg-rose-600" />
             <MetricCard label="Total Paid" value={format(res.totalPayment)} subtext="Principal + Interest + Fees" icon={RefreshCw} color="bg-blue-600" />
           </div>
@@ -504,200 +588,32 @@ export function LoanCalculatorModule({ currency }: { currency: any }) {
         </div>
       </div>
 
-      {/* COMPREHENSIVE EDUCATIONAL GUIDE & CREDIT TIER BENCHMARKS */}
+      {/* COMPREHENSIVE EDUCATIONAL GUIDE & REGULATORY NOTES */}
       <div className="space-y-6 sm:space-y-8 pt-4 sm:pt-6 border-t border-slate-200 dark:border-slate-800">
         <div className="bg-slate-900 text-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl space-y-5 sm:space-y-6 shadow-xl">
           <h3 className="text-xl sm:text-2xl font-black tracking-tight">
-            Personal Loan Calculator: How to Estimate Monthly Payments, Interest Costs, and Origination Fees
+            Personal Loan Calculator: Note Rate vs. APR, Origination Fees, and Regulation Z
           </h3>
           <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
-            <strong>Bottom Line Up Front (BLUF):</strong> Calculating the true cost of an unsecured personal loan requires evaluating three primary metrics: your monthly fixed payment, your total lifetime interest charges, and upfront origination fees. On a standard $25,000 personal loan at an 8.5% annual interest rate over a 5-year (60-month) term, your base monthly payment works out to $513. Accounting for a standard 1.5% upfront origination fee ($375), your total loan cost equals $31,150—comprising $25,000 in original principal, $5,775 in total interest paid, and $375 in fees. Making additional monthly principal payments reduces your outstanding balance faster, directly lowering lifetime interest expenses and shortening your repayment timeline.
+            <strong>Bottom Line Up Front (BLUF):</strong> The note rate is the baseline interest rate applied to your amortization schedule, whereas the Annual Percentage Rate (APR) incorporates upfront finance charges (such as origination fees) and the timing of payments to reflect the true annual cost of borrowing under Truth in Lending Act (TILA) Regulation Z.
           </p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <GlassCard className="p-6 space-y-4">
-            <h4 className="text-lg font-black text-slate-900 dark:text-white">Understanding Total Personal Loan Costs</h4>
+            <h4 className="text-lg font-black text-slate-900 dark:text-white">Federal Preemption and State Rate Caps</h4>
             <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-              Taking out a personal loan involves more than just repaying the principal amount borrowed. Lenders charge interest for the risk of extending credit, and many financial institutions assess upfront processing fees that reduce the net cash disbursed to your bank account.
+              While various states impose statutory usury limits or small-loan interest rate caps, <strong>federal preemption</strong> (under the National Bank Act and federal banking statutes) allows national banks, federal savings associations, and certain partner lenders to export their home-state interest rates nationwide. Consequently, state-specific interest caps do not apply uniformly to every lender or credit product.
             </p>
-            <div className="space-y-1 text-xs sm:text-sm font-mono text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 p-4 rounded-xl">
-              <div className="font-bold text-indigo-600 dark:text-indigo-400">Total Personal Loan Cost Outlay</div>
-              <div>├── Borrowed Principal: The initial cash sum requested from the lender</div>
-              <div>├── Cumulative Interest: The fee charged over time for borrowing funds</div>
-              <div>└── Upfront Origination Fee: Processing fee charged by the lender upon approval</div>
-            </div>
           </GlassCard>
 
           <GlassCard className="p-6 space-y-4">
-            <h4 className="text-lg font-black text-slate-900 dark:text-white">Key Financial Metrics Explained</h4>
-            <ul className="space-y-2 text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-              <li><strong>Monthly Payment:</strong> The fixed installment paid every month throughout the loan duration. Each payment is split between covering accrued monthly interest and reducing the principal balance.</li>
-              <li><strong>Total Interest Paid:</strong> The total dollar amount paid in borrowing costs across the entire loan term. Higher interest rates or longer repayment periods significantly increase this figure.</li>
-              <li><strong>Origination Fee:</strong> An upfront fee charged by lenders to cover administrative costs, underwriting, and processing. Typically 1% to 8% of the loan amount.</li>
-              <li><strong>Total Cost (Principal + Interest + Fees):</strong> The ultimate sum required to completely satisfy the loan obligation.</li>
-            </ul>
+            <h4 className="text-lg font-black text-slate-900 dark:text-white">Military Lending Act (MLA) 36% MAPR Cap</h4>
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              Under the <strong>Military Lending Act (MLA)</strong>, covered borrowers—including active-duty service members, National Guard and Reserve members on active duty, and their certified dependents—are protected by a strict <strong>36% Military Annual Percentage Rate (MAPR)</strong> ceiling on consumer credit. Origination fees, credit insurance, and finance charges are factored directly into the MAPR calculation.
+            </p>
           </GlassCard>
         </div>
-
-        {/* How to Use the Calculator Inputs */}
-        <GlassCard className="p-6 sm:p-8 space-y-6">
-          <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">How to Use the Calculator Inputs</h4>
-          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-            The personal loan calculator allows you to test various borrowing scenarios by modifying core parameters and advanced cost options:
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm text-slate-700 dark:text-slate-300">
-            <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-2">
-              <div className="font-bold text-slate-900 dark:text-white text-base">1. Loan Setup Inputs</div>
-              <ul className="space-y-1.5 list-disc pl-4 text-sm leading-relaxed">
-                <li><strong>Loan Amount ($):</strong> Enter the total dollar sum you intend to borrow (e.g., $25,000).</li>
-                <li><strong>Interest Rate (%):</strong> Input your estimated or quoted annual percentage rate (APR), such as 8.5%.</li>
-                <li><strong>Term (Years):</strong> Select your target repayment window in years (e.g., 5 years / 60 months).</li>
-              </ul>
-            </div>
-            <div className="p-4 bg-indigo-50 dark:bg-indigo-950/40 rounded-xl space-y-2 border border-indigo-200 dark:border-indigo-800">
-              <div className="font-bold text-indigo-900 dark:text-indigo-200 text-base">2. Advanced Options &amp; Fees</div>
-              <ul className="space-y-1.5 list-disc pl-4 text-sm leading-relaxed">
-                <li><strong>Origination Fee (%):</strong> Enter any upfront processing fee assessed by your lender (e.g., 1.5%).</li>
-                <li><strong>Extra Monthly Pay ($):</strong> Input an additional monthly cash amount to pay down principal faster.</li>
-              </ul>
-            </div>
-          </div>
-        </GlassCard>
-
-        {/* Credit Tier Benchmark Table */}
-        <GlassCard className="p-6 sm:p-8 space-y-6">
-          <div className="space-y-2">
-            <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">
-              Benchmark Comparison: Personal Loan Rates and Terms by Credit Tier
-            </h4>
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400">
-              Personal loan interest rates in the U.S. depend heavily on your credit profile. Lenders evaluate credit scores to assign risk tiers, directly impacting the interest rate you are offered.
-            </p>
-          </div>
-
-          <div className="overflow-x-auto max-h-[400px] border border-slate-200 dark:border-slate-700 rounded-2xl">
-            <table className="w-full text-left text-xs" aria-label="U.S. Personal Loan Interest Rate Benchmarks">
-              <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 uppercase tracking-wider font-bold sticky top-0 z-10">
-                <tr>
-                  <th scope="col" className="px-4 py-3">Credit Tier</th>
-                  <th scope="col" className="px-4 py-3">Credit Score Range</th>
-                  <th scope="col" className="px-4 py-3">Average APR Range</th>
-                  <th scope="col" className="px-4 py-3">Estimated Monthly Payment</th>
-                  <th scope="col" className="px-4 py-3">Total Interest Paid (5 Years)</th>
-                  <th scope="col" className="px-4 py-3">Total Loan Outlay</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono">
-                {[
-                  ['Excellent', '720 to 850', '6.50% – 10.00%', '$489 – $531', '$4,352 – $6,848', '$29,352 – $31,848'],
-                  ['Good', '690 to 719', '10.50% – 15.00%', '$537 – $596', '$7,220 – $10,757', '$32,220 – $35,757'],
-                  ['Fair', '630 to 689', '15.50% – 22.00%', '$602 – $688', '$11,148 – $16,299', '$36,148 – $41,299'],
-                  ['Needs Work', '300 to 629', '22.50% – 32.00%', '$696 – $824', '$16,742 – $24,453', '$41,742 – $49,453']
-                ].map((row, idx) => (
-                  <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
-                    <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">{row[0]}</td>
-                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{row[1]}</td>
-                    <td className="px-4 py-3 text-indigo-600 dark:text-indigo-400 font-bold">{row[2]}</td>
-                    <td className="px-4 py-3 text-slate-900 dark:text-white">{row[3]}</td>
-                    <td className="px-4 py-3 text-rose-600 dark:text-rose-400 font-bold">{row[4]}</td>
-                    <td className="px-4 py-3 font-black text-slate-900 dark:text-white">{row[5]}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 italic">
-            Note: Benchmark figures assume zero origination fees. Actual rates vary based on lender underwriting criteria, income proof, and existing debt obligations.
-          </div>
-        </GlassCard>
-
-        {/* U.S. State Legal Interest Rate Caps and Regulations */}
-        <GlassCard className="p-6 sm:p-8 space-y-6">
-          <div className="space-y-2">
-            <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">U.S. State Legal Interest Rate Caps and Regulations</h4>
-            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-              While federal credit unions enforce a strict maximum statutory APR cap (typically 18% under federal guidelines), state laws regulate state-chartered banks, online fintech platforms, and private lenders differently. Because licensing rules and predatory lending protections vary across all 50 U.S. states, our free-entry rate field allows you to type in any exact custom APR or fee structure permitted in your jurisdiction.
-            </p>
-          </div>
-
-          <div className="space-y-3">
-            <h5 className="font-bold text-sm text-slate-900 dark:text-white uppercase tracking-wider">Overview of U.S. State Personal Loan Regulatory Frameworks</h5>
-            <div className="overflow-x-auto max-h-[400px] border border-slate-200 dark:border-slate-700 rounded-2xl">
-              <table className="w-full text-left text-xs sm:text-sm" aria-label="U.S. State Personal Loan Regulatory Frameworks">
-                <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 uppercase tracking-wider font-bold sticky top-0 z-10">
-                  <tr>
-                    <th scope="col" className="px-4 py-3">State</th>
-                    <th scope="col" className="px-4 py-3">Small Loan APR Cap Status</th>
-                    <th scope="col" className="px-4 py-3">Typical State Licensing Body</th>
-                    <th scope="col" className="px-4 py-3">Maximum Consumer Protections</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono">
-                  {[
-                    ['Alabama', 'Rate capped under Small Loan Act', 'AL State Banking Department', 'Tiered interest rate structure'],
-                    ['Alaska', 'Statutory caps apply on small loans', 'AK Division of Banking & Securities', 'Strict disclosure rules'],
-                    ['Arizona', 'Capped for consumer loans under $10,000', 'AZ Department of Insurance and Financial Institutions', 'Military lending protections enforced'],
-                    ['Arkansas', '17% Constitutional Usury Limit', 'AR State Bank Department', 'Strict interest rate enforcement'],
-                    ['California', '36% APR cap on loans under $10,000', 'CA Department of Financial Protection and Innovation', 'AB 539 rate capping enforcement'],
-                    ['Colorado', '36% APR cap under UCCC guidelines', 'CO Attorney General - Consumer Credit', 'Uniform Consumer Credit Code limits'],
-                    ['Connecticut', '36% APR cap on consumer credit', 'CT Department of Banking', 'Strict APR calculation rules'],
-                    ['Delaware', 'Flexible market-rate options', 'DE Office of the State Bank Commissioner', 'Clear contractual disclosure requirements'],
-                    ['Florida', 'Tiered rate caps based on loan amount', 'FL Office of Financial Regulation', 'Florida Consumer Finance Act limits'],
-                    ['Georgia', 'Capped under Industrial Loan Act', 'GA Office of Commissioner of Insurance and Safety Fire', 'Industrial loan fee protections'],
-                    ['Hawaii', 'Capped on small consumer loans', 'HI Division of Financial Institutions', 'Small dollar loan restrictions'],
-                    ['Idaho', 'Market rate rules with clear disclosure', 'ID Department of Finance', 'Credit Code enforcement'],
-                    ['Illinois', '36% APR cap under PLPA', 'IL Department of Financial and Professional Regulation', 'Predatory Loan Prevention Act enforcement'],
-                    ['Indiana', 'Capped under UCCC rate schedules', 'IN Department of Financial Institutions', 'Indiana Uniform Consumer Credit Code'],
-                    ['Iowa', 'Regulated state caps on consumer loans', 'IA Division of Banking', 'Consumer Credit Code protections'],
-                    ['Kansas', 'Capped under Kansas UCCC rules', 'KS Office of the State Bank Commissioner', 'Kansas Consumer Credit Code'],
-                    ['Kentucky', 'Capped on consumer loans under statutory thresholds', 'KY Department of Financial Institutions', 'Consumer loan licensing requirements'],
-                    ['Louisiana', 'Tiered interest caps based on loan sizing', 'LA Office of Financial Institutions', 'Louisiana Consumer Credit Law'],
-                    ['Maine', '36% maximum rate cap for small loans', 'ME Bureau of Consumer Credit Protection', 'Strict fee disclosure regulations'],
-                    ['Maryland', 'Capped consumer loan rate limits', 'MD Office of the Commissioner of Financial Regulation', 'Consumer loan law protections'],
-                    ['Massachusetts', '23% small loan rate cap', 'MA Division of Banks', 'Small Loan Law enforcement'],
-                    ['Michigan', 'Capped under Regulatory Loan Act', 'MI Department of Insurance and Financial Services', 'Regulatory Loan Act limits'],
-                    ['Minnesota', 'Regulated small-loan statutory limits', 'MN Department of Commerce', 'Regulated Loan Act protections'],
-                    ['Mississippi', 'Tiered rate caps apply', 'MS Department of Banking and Consumer Finance', 'Small Loan Regulatory Act'],
-                    ['Missouri', 'Regulated loan company guidelines', 'MO Division of Finance', 'Consumer credit disclosure rules'],
-                    ['Montana', '36% cap voter-approved under I-164', 'MT Division of Banking and Financial Institutions', 'Consumer Loan Act limits'],
-                    ['Nebraska', '36% cap voter-approved under Measure 428', 'NE Department of Banking and Finance', 'Delayed Deposit and Small Loan limits'],
-                    ['Nevada', 'Market rate options with mandatory disclosures', 'NV Financial Institutions Division', 'High-interest loan disclosure rules'],
-                    ['New Hampshire', '36% APR cap on small consumer loans', 'NH Banking Department', 'Small Loan Act protections'],
-                    ['New Jersey', '30% criminal usury limit', 'NJ Department of Banking and Insurance', 'Consumer Finance Licensing Act'],
-                    ['New Mexico', '36% APR cap under HB 132', 'NM Financial Institutions Division', 'Small Loan Act protections'],
-                    ['New York', '25% criminal usury cap', 'NY Department of Financial Services', 'Strict usury caps enforced'],
-                    ['North Carolina', 'Capped under Consumer Finance Act', 'NC Commissioner of Banks', 'Consumer Finance Act protections'],
-                    ['North Dakota', 'Statutory limits on small loans', 'ND Department of Financial Institutions', 'Consumer finance limits'],
-                    ['Ohio', 'Capped under Small Loan and Mortgage Acts', 'OH Division of Financial Institutions', 'Ohio Small Loan Law'],
-                    ['Oklahoma', 'Capped under Oklahoma UCCC', 'OK Department of Consumer Credit', 'Uniform Consumer Credit Code'],
-                    ['Oregon', '36% APR cap on consumer loans', 'OR Division of Financial Regulation', 'Consumer Finance License regulations'],
-                    ['Pennsylvania', '18% baseline statutory cap under CFTAPA', 'PA Department of Banking and Securities', 'Consumer Discount Company Act'],
-                    ['Rhode Island', 'Regulated rate limits for small loans', 'RI Department of Business Regulation', 'Small Loan License regulations'],
-                    ['South Carolina', 'Fixed rate caps required to be posted', 'SC Department of Consumer Affairs', 'Consumer Protection Code'],
-                    ['South Dakota', '36% voter-approved cap under Initiated Measure 21', 'SD Division of Banking', 'Money Lending license limits'],
-                    ['Tennessee', 'Capped rate structure under state formulas', 'TN Department of Financial Institutions', 'Flexible rate formula laws'],
-                    ['Texas', 'Tiered interest caps under Finance Code', 'TX Office of Consumer Credit Commissioner', 'OCCC regulated loan schedules'],
-                    ['Utah', 'Market-based rate system with clear contracts', 'UT Department of Financial Institutions', 'Consumer Credit Code protections'],
-                    ['Vermont', 'Strict usury caps apply', 'VT Department of Financial Regulation', 'Small Loan Act regulations'],
-                    ['Virginia', '36% APR cap on consumer loans under $35,000', 'VA State Corporation Commission / VA Bureau of Financial Institutions', 'Consumer Loan Act rules'],
-                    ['Washington', '32% APR cap for small consumer loans', 'WA Department of Financial Institutions', 'Consumer Loan Act rules'],
-                    ['West Virginia', 'Statutory interest caps on small loans', 'WV Division of Financial Institutions', 'Consumer Credit and Protection Act'],
-                    ['Wisconsin', 'Regulated consumer loan framework', 'WI Department of Financial Institutions', 'Wisconsin Consumer Act'],
-                    ['Wyoming', 'Capped under Wyoming UCCC rules', 'WY Division of Banking', 'Uniform Consumer Credit Code']
-                  ].map(([st, cap, auth, prot], idx) => (
-                    <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
-                      <td className="px-4 py-2 font-bold text-slate-900 dark:text-white">{st}</td>
-                      <td className="px-4 py-2 text-slate-700 dark:text-slate-300">{cap}</td>
-                      <td className="px-4 py-2 text-indigo-600 dark:text-indigo-400 font-bold">{auth}</td>
-                      <td className="px-4 py-2 text-slate-600 dark:text-slate-400">{prot}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </GlassCard>
 
         {/* The Mathematics of Personal Loan Amortization */}
         <GlassCard className="p-6 sm:p-8 space-y-6">
@@ -835,77 +751,39 @@ export function LoanCalculatorModule({ currency }: { currency: any }) {
 /* ============================================================================
  * 2. AUTO LOAN CALCULATOR MODULE
  * ========================================================================== */
-export const US_AUTO_SALES_TAX_LIST = [
-  { code: 'AL', name: 'Alabama', rate: 2.00 },
-  { code: 'AK', name: 'Alaska', rate: 0.00 },
-  { code: 'AZ', name: 'Arizona', rate: 5.60 },
-  { code: 'AR', name: 'Arkansas', rate: 6.50 },
-  { code: 'CA', name: 'California', rate: 7.25 },
-  { code: 'CO', name: 'Colorado', rate: 2.90 },
-  { code: 'CT', name: 'Connecticut', rate: 6.35 },
-  { code: 'DE', name: 'Delaware', rate: 0.00 },
-  { code: 'DC', name: 'District of Columbia', rate: 6.00 },
-  { code: 'FL', name: 'Florida', rate: 6.00 },
-  { code: 'GA', name: 'Georgia (TAVT)', rate: 7.00 },
-  { code: 'HI', name: 'Hawaii', rate: 4.00 },
-  { code: 'ID', name: 'Idaho', rate: 6.00 },
-  { code: 'IL', name: 'Illinois', rate: 6.25 },
-  { code: 'IN', name: 'Indiana', rate: 7.00 },
-  { code: 'IA', name: 'Iowa', rate: 5.00 },
-  { code: 'KS', name: 'Kansas', rate: 6.50 },
-  { code: 'KY', name: 'Kentucky (Usage Tax)', rate: 6.00 },
-  { code: 'LA', name: 'Louisiana', rate: 4.45 },
-  { code: 'ME', name: 'Maine', rate: 5.50 },
-  { code: 'MD', name: 'Maryland', rate: 6.00 },
-  { code: 'MA', name: 'Massachusetts', rate: 6.25 },
-  { code: 'MI', name: 'Michigan', rate: 6.00 },
-  { code: 'MN', name: 'Minnesota', rate: 6.875 },
-  { code: 'MS', name: 'Mississippi', rate: 5.00 },
-  { code: 'MO', name: 'Missouri', rate: 4.225 },
-  { code: 'MT', name: 'Montana', rate: 0.00 },
-  { code: 'NE', name: 'Nebraska', rate: 5.50 },
-  { code: 'NV', name: 'Nevada', rate: 4.60 },
-  { code: 'NH', name: 'New Hampshire', rate: 0.00 },
-  { code: 'NJ', name: 'New Jersey', rate: 6.625 },
-  { code: 'NM', name: 'New Mexico (Motor Vehicle)', rate: 4.00 },
-  { code: 'NY', name: 'New York', rate: 4.00 },
-  { code: 'NC', name: 'North Carolina (HUT)', rate: 3.00 },
-  { code: 'ND', name: 'North Dakota', rate: 5.00 },
-  { code: 'OH', name: 'Ohio', rate: 5.75 },
-  { code: 'OK', name: 'Oklahoma', rate: 3.25 },
-  { code: 'OR', name: 'Oregon (Privilege Tax)', rate: 0.50 },
-  { code: 'PA', name: 'Pennsylvania', rate: 6.00 },
-  { code: 'RI', name: 'Rhode Island', rate: 7.00 },
-  { code: 'SC', name: 'South Carolina', rate: 5.00 },
-  { code: 'SD', name: 'South Dakota', rate: 4.00 },
-  { code: 'TN', name: 'Tennessee', rate: 7.00 },
-  { code: 'TX', name: 'Texas', rate: 6.25 },
-  { code: 'UT', name: 'Utah', rate: 6.85 },
-  { code: 'VT', name: 'Vermont', rate: 6.00 },
-  { code: 'VA', name: 'Virginia (SUT)', rate: 4.15 },
-  { code: 'WA', name: 'Washington', rate: 6.50 },
-  { code: 'WV', name: 'West Virginia', rate: 6.00 },
-  { code: 'WI', name: 'Wisconsin', rate: 5.00 },
-  { code: 'WY', name: 'Wyoming', rate: 4.00 },
-];
+/* ============================================================================
+ * 2. AUTO LOAN CALCULATOR MODULE
+ * ========================================================================== */
 
 export function AutoLoanModule({ currency }: { currency: any }) {
   const [stateCode, setStateCode] = useState('CA');
+  const [tradeInReducesTaxOverride, setTradeInReducesTaxOverride] = useState<boolean | null>(null);
   const [params, setParams] = useState({
     vehiclePrice: 38000,
     downPayment: 6000,
     tradeInValue: 4000,
+    tradeInLoanPayoff: 0,
+    manufacturerRebate: 0,
+    rebateIsTaxable: true,
     annualRate: 6.2,
     termMonths: 60,
     salesTaxPercent: 7.25,
+    localTaxPercent: 0.0,
     titleFees: 450,
-    dealerDocFee: 350
+    dealerDocFee: 350,
+    docFeeIsFinancingOnly: false
   });
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Sourced state configuration from master 50-state regulatory repository
+  const selectedStateConfig = useMemo(() => {
+    return US_AUTO_SALES_TAX_LIST.find(s => s.code === stateCode);
+  }, [stateCode]);
 
   // Sync state baseline sales tax when state changes
   const handleStateChange = (newCode: string) => {
     setStateCode(newCode);
+    setTradeInReducesTaxOverride(null); // Reset manual override to follow selected state's statutory rule
     if (newCode === 'CUSTOM') return;
     const item = US_AUTO_SALES_TAX_LIST.find(s => s.code === newCode);
     if (item) {
@@ -913,145 +791,374 @@ export function AutoLoanModule({ currency }: { currency: any }) {
     }
   };
 
-  const res = useMemo(() => calculateAutoLoan(params), [params]);
-  const format = (v: number) => `${currency.symbol}${new Intl.NumberFormat().format(Math.round(v))}`;
+  // Statutory determination for whether trade-in reduces taxable amount
+  const stateStatutoryTradeInCredit = selectedStateConfig ? selectedStateConfig.tradeInTaxCredit === true : true;
+  const effectiveTradeInReducesTax = tradeInReducesTaxOverride !== null ? tradeInReducesTaxOverride : stateStatutoryTradeInCredit;
 
-  // Regulation Z Actuarial APR: Prepaid finance charges / doc fees increase true APR
-  const aprRegZ = useMemo(() => {
-    const financed = Math.max(1, res.totalFinanced - params.dealerDocFee);
-    return solveRegulationZ_Apr(financed, res.monthlyPayment, params.termMonths);
-  }, [res.totalFinanced, res.monthlyPayment, params.termMonths, params.dealerDocFee]);
+  const res = useMemo(() => calculateAutoLoan({
+    vehiclePrice: params.vehiclePrice,
+    downPayment: params.downPayment,
+    tradeInValue: params.tradeInValue,
+    tradeInLoanPayoff: params.tradeInLoanPayoff,
+    manufacturerRebate: params.manufacturerRebate,
+    rebateIsTaxable: params.rebateIsTaxable,
+    annualRate: params.annualRate,
+    termMonths: params.termMonths,
+    salesTaxPercent: params.salesTaxPercent,
+    localTaxPercent: params.localTaxPercent,
+    titleFees: params.titleFees,
+    dealerDocFee: params.dealerDocFee,
+    docFeeIsFinancingOnly: params.docFeeIsFinancingOnly,
+    stateCode: stateCode !== 'CUSTOM' ? stateCode : undefined,
+    tradeInReducesTax: effectiveTradeInReducesTax
+  }), [params, stateCode, effectiveTradeInReducesTax]);
+
+  const format = (v: number) => `${currency.symbol}${new Intl.NumberFormat().format(Math.round(v))}`;
+  const formatDetailed = (v: number) => `${currency.symbol}${new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)}`;
+
+  // Worked example computed dynamically from engine (CA, $38,000 price, $4,000 trade, 7.25% tax = $2,755 on full price)
+  const workedExample = useMemo(() => calculateAutoLoan({
+    vehiclePrice: 38000,
+    downPayment: 6000,
+    tradeInValue: 4000,
+    tradeInLoanPayoff: 0,
+    manufacturerRebate: 0,
+    rebateIsTaxable: true,
+    annualRate: 6.2,
+    termMonths: 60,
+    salesTaxPercent: 7.25,
+    localTaxPercent: 0,
+    titleFees: 450,
+    dealerDocFee: 350,
+    docFeeIsFinancingOnly: false,
+    stateCode: 'CA',
+    tradeInReducesTax: false
+  }), []);
+
+  const combinedTaxRate = Math.max(0, params.salesTaxPercent) + Math.max(0, params.localTaxPercent);
 
   const chartData = [
-    { name: 'Vehicle Loan', value: res.totalFinanced, color: '#3b82f6' },
-    { name: 'Interest', value: res.totalInterest, color: '#f43f5e' },
-    { name: 'Down + Trade', value: params.downPayment + params.tradeInValue, color: '#10b981' }
+    { name: 'Vehicle Financed', value: res.totalFinanced, color: '#3b82f6' },
+    { name: 'Total Interest', value: res.totalInterest, color: '#f43f5e' },
+    { name: 'Cash Down', value: params.downPayment, color: '#10b981' },
+    ...(res.tradeInNetEquity > 0 ? [{ name: 'Trade Net Equity', value: res.tradeInNetEquity, color: '#8b5cf6' }] : [])
   ];
 
   return (
     <div className="space-y-8">
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <div className="lg:col-span-4 space-y-6">
+        {/* Left Column: Inputs */}
+        <div className="lg:col-span-5 space-y-6">
           <GlassCard className="p-6 space-y-6">
-            <h3 className="text-lg font-black flex items-center gap-2 text-slate-900 dark:text-white">
-              <Briefcase size={20} className="text-slate-700 dark:text-slate-300" aria-hidden="true" /> Vehicle Financing (US)
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-black flex items-center gap-2 text-slate-900 dark:text-white">
+                <Briefcase size={20} className="text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
+                <span>Vehicle Financing (US)</span>
+              </h3>
+              <span className="text-xs font-mono font-bold text-slate-500 uppercase">
+                TILA Reg Z
+              </span>
+            </div>
 
+            {/* State Jurisdiction Dropdown */}
             <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">
-                State Sales Tax Jurisdiction <span className="text-slate-500 font-normal">(Optional)</span>
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">
+                  State Sales Tax Jurisdiction
+                </label>
+                {selectedStateConfig?.needsVerification && (
+                  <span className="text-[11px] font-bold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 px-2 py-0.5 rounded border border-amber-200 dark:border-amber-800">
+                    Needs verification: {selectedStateConfig.code}
+                  </span>
+                )}
+              </div>
               <select
                 value={stateCode}
                 onChange={(e) => handleStateChange(e.target.value)}
                 className="w-full min-h-[44px] bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-xl px-4 text-xs font-bold text-slate-900 dark:text-white outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
               >
-                <option value="CUSTOM">-- Select State (Optional) / Free-entry --</option>
+                <option value="CUSTOM">-- Custom Manual Entry / No State Pre-fill --</option>
                 {US_AUTO_SALES_TAX_LIST.map(st => (
                   <option key={st.code} value={st.code}>
-                    {st.name} ({st.rate === 0 ? '0% Sales Tax' : `${st.rate}% Sales Tax`})
+                    {st.name} ({st.rate === 0 ? '0% State Base' : `${st.rate}% State Base`}
+                    {st.tradeInTaxCredit === false ? ' • No Trade Credit' : ''}
+                    {st.maxTaxCap ? ` • $${st.maxTaxCap} Cap` : ''}
+                    {st.needsVerification ? ' • Unverified' : ''})
                   </option>
                 ))}
               </select>
-              <p className="text-xs text-slate-500 dark:text-slate-400 pl-1">
-                Selecting a state pre-populates default sales tax rates, or enter any custom rate below.
-              </p>
+              {selectedStateConfig?.notes && (
+                <div className="p-2.5 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-lg text-xs text-blue-900 dark:text-blue-300 leading-normal">
+                  <strong>Statutory Rule ({selectedStateConfig.code}):</strong> {selectedStateConfig.notes} (Source: {selectedStateConfig.source})
+                </div>
+              )}
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <InputGroup 
-                label="Sales Tax Rate" 
-                value={params.salesTaxPercent} 
-                suffix="%" 
-                step="0.01" 
-                onChange={(v: number) => {
-                  setStateCode('CUSTOM');
-                  setParams(p => ({ ...p, salesTaxPercent: v }));
-                }} 
-              />
-              <InputGroup label="Vehicle Price" value={params.vehiclePrice} prefix={currency.symbol} onChange={(v: number) => setParams({...params, vehiclePrice: v})} />
+            {/* Sales Tax Rates: State % + Local % + Combined Display */}
+            <div className="p-3.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-slate-200 dark:border-slate-700 space-y-3">
+              <div className="flex items-center justify-between text-xs font-bold">
+                <span className="text-slate-700 dark:text-slate-300 uppercase tracking-wider">Sales Tax Rates</span>
+                <span className="text-indigo-600 dark:text-indigo-400 font-mono text-sm">
+                  Combined: {combinedTaxRate.toFixed(3).replace(/\.?0+$/, '')}%
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <InputGroup 
+                  label="State Tax Rate" 
+                  value={params.salesTaxPercent} 
+                  suffix="%" 
+                  step="0.01" 
+                  onChange={(v: number) => {
+                    setParams(p => ({ ...p, salesTaxPercent: v }));
+                  }} 
+                />
+                <InputGroup 
+                  label="Local / County Tax" 
+                  value={params.localTaxPercent} 
+                  suffix="%" 
+                  step="0.01" 
+                  onChange={(v: number) => {
+                    setParams(p => ({ ...p, localTaxPercent: v }));
+                  }} 
+                />
+              </div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
+                <span>Taxable Base: {formatDetailed(res.taxableBase)}</span>
+                <span className="font-bold text-slate-700 dark:text-slate-300">Total Tax: {formatDetailed(res.salesTax)}</span>
+              </div>
             </div>
 
+            {/* Vehicle Price & Down Payment */}
             <div className="grid grid-cols-2 gap-4">
-              <InputGroup label="Down Payment" value={params.downPayment} prefix={currency.symbol} onChange={(v: number) => setParams({...params, downPayment: v})} />
-              <InputGroup label="Trade-in Value" value={params.tradeInValue} prefix={currency.symbol} onChange={(v: number) => setParams({...params, tradeInValue: v})} />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <InputGroup label="Interest Rate" value={params.annualRate} suffix="%" step="0.1" onChange={(v: number) => setParams({...params, annualRate: v})} />
-              <InputGroup label="Term" value={params.termMonths} suffix="mo" step="12" onChange={(v: number) => setParams({...params, termMonths: v})} />
+              <InputGroup label="Vehicle Price" value={params.vehiclePrice} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, vehiclePrice: v }))} />
+              <InputGroup label="Cash Down Payment" value={params.downPayment} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, downPayment: v }))} />
             </div>
 
+            {/* Trade-in Value & Loan Payoff (Negative Equity Support) */}
+            <div className="p-3.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-slate-200 dark:border-slate-700 space-y-3">
+              <div className="flex items-center justify-between text-xs font-bold">
+                <span className="text-slate-700 dark:text-slate-300 uppercase tracking-wider">Trade-In Allowance &amp; Equity</span>
+                {res.negativeEquity > 0 ? (
+                  <span className="text-xs font-bold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/60 px-2 py-0.5 rounded border border-rose-200 dark:border-rose-800">
+                    Negative Equity: +{format(res.negativeEquity)}
+                  </span>
+                ) : res.tradeInNetEquity > 0 ? (
+                  <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-800">
+                    Net Equity Credit: -{format(res.tradeInNetEquity)}
+                  </span>
+                ) : null}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <InputGroup label="Trade-in Value" value={params.tradeInValue} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, tradeInValue: v }))} />
+                <InputGroup label="Loan Payoff on Trade-in" value={params.tradeInLoanPayoff} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, tradeInLoanPayoff: v }))} />
+              </div>
+              {params.tradeInLoanPayoff > params.tradeInValue && (
+                <p className="text-[11px] text-rose-600 dark:text-rose-400 leading-normal">
+                  Loan payoff exceeds trade-in value: difference of {format(res.negativeEquity)} is added to the amount financed.
+                </p>
+              )}
+
+              {/* Trade-in Tax Credit Manual Override Toggle */}
+              <div className="pt-2 border-t border-slate-200 dark:border-slate-700 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <input
+                    id="tradein-tax-credit-toggle"
+                    type="checkbox"
+                    checked={effectiveTradeInReducesTax}
+                    onChange={(e) => setTradeInReducesTaxOverride(e.target.checked)}
+                    className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <label htmlFor="tradein-tax-credit-toggle" className="text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer">
+                    Trade-in reduces taxable amount
+                  </label>
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+                  Statutory default for {selectedStateConfig?.name || stateCode}: {stateStatutoryTradeInCredit ? 'Allowed (tax on net difference)' : 'Prohibited (tax on full price)'}.
+                  {tradeInReducesTaxOverride !== null && (
+                    <span className="font-bold text-indigo-600 dark:text-indigo-400"> (Manual override active)</span>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {/* Manufacturer Rebate */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+              <InputGroup label="Manufacturer Rebate ($)" value={params.manufacturerRebate} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, manufacturerRebate: v }))} />
+              <div className="space-y-1 pt-1">
+                <div className="flex items-center gap-2">
+                  <input
+                    id="rebate-taxable-toggle"
+                    type="checkbox"
+                    checked={params.rebateIsTaxable}
+                    onChange={(e) => setParams(p => ({ ...p, rebateIsTaxable: e.target.checked }))}
+                    className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <label htmlFor="rebate-taxable-toggle" className="text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer">
+                    Rebate is taxable
+                  </label>
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {params.rebateIsTaxable ? 'Applied after tax (standard in CA, TX, NY).' : 'Applied before tax (dealer discount).'}
+                </p>
+              </div>
+            </div>
+
+            {/* Rate & Term */}
+            <div className="grid grid-cols-2 gap-4">
+              <InputGroup label="Interest Note Rate" value={params.annualRate} suffix="%" step="0.05" onChange={(v: number) => setParams(p => ({ ...p, annualRate: v }))} />
+              <InputGroup label="Loan Term" value={params.termMonths} suffix="mo" step="12" onChange={(v: number) => setParams(p => ({ ...p, termMonths: v }))} />
+            </div>
+
+            {/* Advanced Fees & Doc Fee Regulation Z Toggle */}
             <AdvancedToggle isOpen={showAdvanced} onToggle={() => setShowAdvanced(!showAdvanced)} />
             {showAdvanced && (
-              <div className="space-y-4 pt-2 border-t border-slate-200 dark:border-slate-700">
+              <div className="space-y-4 pt-3 border-t border-slate-200 dark:border-slate-700">
                 <div className="grid grid-cols-2 gap-4">
-                  <InputGroup label="Title & Reg" value={params.titleFees} prefix={currency.symbol} onChange={(v: number) => setParams({...params, titleFees: v})} />
-                  <InputGroup label="Doc Fee" value={params.dealerDocFee} prefix={currency.symbol} onChange={(v: number) => setParams({...params, dealerDocFee: v})} />
+                  <InputGroup label="Title & Reg Fees" value={params.titleFees} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, titleFees: v }))} />
+                  <InputGroup label="Dealer Doc Fee" value={params.dealerDocFee} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, dealerDocFee: v }))} />
+                </div>
+
+                {/* Regulation Z Doc Fee Checkbox */}
+                <div className="p-3 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 rounded-xl space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="doc-fee-financing-only"
+                      type="checkbox"
+                      checked={params.docFeeIsFinancingOnly}
+                      onChange={(e) => setParams(p => ({ ...p, docFeeIsFinancingOnly: e.target.checked }))}
+                      className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <label htmlFor="doc-fee-financing-only" className="text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer">
+                      Fee is charged only to financing customers (default off)
+                    </label>
+                  </div>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-normal">
+                    Under Regulation Z (12 CFR § 1026.4), documentation fees payable by cash buyers too are not finance charges. Check this box only if the doc fee is charged exclusively to financing customers to treat it as a prepaid finance charge in the APR.
+                  </p>
                 </div>
               </div>
             )}
           </GlassCard>
         </div>
 
-        <div className="lg:col-span-8 space-y-8">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <MetricCard label="Monthly Payment" value={format(res.monthlyPayment)} subtext={`For ${params.termMonths} months`} icon={Wallet} color="bg-slate-800 dark:bg-slate-700" />
-            <MetricCard label="Regulation Z APR" value={`${aprRegZ.toFixed(3)}%`} subtext="Actuarial method" icon={Percent} color="bg-indigo-600" />
-            <MetricCard label="Total Financed" value={format(res.totalFinanced)} subtext="Includes tax & fees" icon={ShieldAlert} color="bg-blue-600" />
-            <MetricCard label="Total Interest" value={format(res.totalInterest)} subtext="Financing cost" icon={Landmark} color="bg-rose-600" />
+        {/* Right Column: Hero Metrics & TILA Summary */}
+        <div className="lg:col-span-7 space-y-6">
+          {/* Hero Metrics */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+            <MetricCard 
+              label="Monthly Payment" 
+              value={format(res.monthlyPayment)} 
+              subtext={res.finalPayment !== res.monthlyPayment ? `Final mo: ${formatDetailed(res.finalPayment)}` : `For ${params.termMonths} months`} 
+              icon={Wallet} 
+              color="bg-slate-800 dark:bg-slate-700" 
+            />
+            <MetricCard 
+              label="Regulation Z APR" 
+              value={`${res.regulationZApr.toFixed(3)}%`} 
+              subtext={params.docFeeIsFinancingOnly ? "Includes doc fee" : "Equals note rate"} 
+              icon={Percent} 
+              color="bg-indigo-600" 
+            />
+            <MetricCard 
+              label="Total Financed" 
+              value={format(res.totalFinanced)} 
+              subtext="Includes tax & fees" 
+              icon={ShieldAlert} 
+              color="bg-blue-600" 
+            />
+            <MetricCard 
+              label="Total Interest" 
+              value={format(res.totalInterest)} 
+              subtext="Total financing cost" 
+              icon={Landmark} 
+              color="bg-rose-600" 
+            />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            <GlassCard className="p-6 lg:p-8 space-y-6">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Total Vehicle Cost Breakdown</h4>
-              <div className="h-64" aria-label="Vehicle Cost Breakdown Chart">
+          {/* Breakdown Charts & TILA Summary Card */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <GlassCard className="p-6 space-y-4">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Vehicle Cost Allocation</h4>
+              <div className="h-56" aria-label="Vehicle Cost Breakdown Chart">
                 <ResponsiveContainer width="100%" height="100%">
                   <RePieChart>
-                    <Pie data={chartData} innerRadius={60} outerRadius={80} paddingAngle={8} dataKey="value">
+                    <Pie data={chartData} innerRadius={55} outerRadius={75} paddingAngle={6} dataKey="value">
                       {chartData.map((e, idx) => <Cell key={idx} fill={e.color} />)}
                     </Pie>
                     <ReTooltip contentStyle={{ borderRadius: '12px', border: '1px solid #cbd5e1', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }} />
                   </RePieChart>
                 </ResponsiveContainer>
               </div>
-              <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="grid grid-cols-2 gap-2 text-center text-xs">
                 {chartData.map(d => (
-                  <div key={d.name} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-xl">
-                    <div className="text-xs font-bold uppercase text-slate-700 dark:text-slate-300">{d.name}</div>
-                    <div className="text-sm font-black" style={{ color: d.color }}>{format(d.value)}</div>
+                  <div key={d.name} className="p-2.5 bg-slate-100 dark:bg-slate-800 rounded-xl">
+                    <div className="font-bold uppercase text-slate-700 dark:text-slate-300 truncate">{d.name}</div>
+                    <div className="text-sm font-black truncate" style={{ color: d.color }}>{format(d.value)}</div>
                   </div>
                 ))}
               </div>
             </GlassCard>
 
-            <GlassCard className="p-6 lg:p-8 space-y-6 flex flex-col justify-between">
-              <div className="space-y-4">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Auto Deal Summary (TILA Disclosure)</h4>
-                <div className="space-y-3 text-sm">
-                  <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
-                    <span className="text-slate-700 dark:text-slate-300 font-medium">Vehicle Base Price</span>
-                    <span className="font-bold text-slate-900 dark:text-white">{format(params.vehiclePrice)}</span>
+            <GlassCard className="p-6 space-y-4 flex flex-col justify-between">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-700 pb-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Auto Deal Summary (TILA)</h4>
+                  <span className="text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400">{res.regulationZApr.toFixed(3)}% APR</span>
+                </div>
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-slate-600 dark:text-slate-400">Vehicle Base Price</span>
+                    <span className="font-bold text-slate-900 dark:text-white">{formatDetailed(params.vehiclePrice)}</span>
                   </div>
-                  <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
-                    <span className="text-slate-700 dark:text-slate-300 font-medium">State Sales Tax ({params.salesTaxPercent}%)</span>
-                    <span className="font-bold text-slate-900 dark:text-white">+{format(res.salesTax)}</span>
+                  {params.manufacturerRebate > 0 && (
+                    <div className="flex justify-between text-emerald-600 dark:text-emerald-400">
+                      <span>Manufacturer Rebate {params.rebateIsTaxable ? '(Taxable)' : '(Non-Taxable)'}</span>
+                      <span className="font-bold">-{formatDetailed(params.manufacturerRebate)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <span className="text-slate-600 dark:text-slate-400">
+                      Sales Tax ({combinedTaxRate.toFixed(2)}% on {format(res.taxableBase)})
+                    </span>
+                    <span className="font-bold text-slate-900 dark:text-white">+{formatDetailed(res.salesTax)}</span>
                   </div>
-                  <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
-                    <span className="text-slate-700 dark:text-slate-300 font-medium">Doc &amp; Title Fees</span>
-                    <span className="font-bold text-slate-900 dark:text-white">+{format(res.fees)}</span>
+                  <div className="flex justify-between">
+                    <span className="text-slate-600 dark:text-slate-400">Doc &amp; Title Fees</span>
+                    <span className="font-bold text-slate-900 dark:text-white">+{formatDetailed(res.fees)}</span>
                   </div>
-                  <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
-                    <span className="text-slate-700 dark:text-slate-300 font-medium">Down Payment &amp; Trade Credit</span>
-                    <span className="font-bold text-emerald-600 dark:text-emerald-400">-{format(params.downPayment + params.tradeInValue)}</span>
+                  <div className="flex justify-between text-emerald-600 dark:text-emerald-400">
+                    <span>Down Payment</span>
+                    <span className="font-bold">-{formatDetailed(params.downPayment)}</span>
                   </div>
-                  <div className="flex justify-between py-3 border-t border-slate-200 dark:border-slate-700">
-                    <span className="font-bold text-slate-900 dark:text-white">Total Out-of-Pocket Expenditure</span>
-                    <span className="font-black text-indigo-600 dark:text-indigo-400 text-base">{format(res.totalVehicleCost)}</span>
+                  {params.tradeInValue > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-600 dark:text-slate-400">Trade-In Allowance</span>
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">-{formatDetailed(params.tradeInValue)}</span>
+                    </div>
+                  )}
+                  {params.tradeInLoanPayoff > 0 && (
+                    <div className="flex justify-between text-rose-600 dark:text-rose-400">
+                      <span>Trade-in Loan Payoff</span>
+                      <span className="font-bold">+{formatDetailed(params.tradeInLoanPayoff)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between pt-2 border-t border-slate-200 dark:border-slate-700 font-bold">
+                    <span className="text-slate-900 dark:text-white">Amount Financed</span>
+                    <span className="text-indigo-600 dark:text-indigo-400 font-black">{formatDetailed(res.totalFinanced)}</span>
                   </div>
+                  <div className="flex justify-between font-bold">
+                    <span className="text-slate-900 dark:text-white">Total Out-of-Pocket Outlay</span>
+                    <span className="text-emerald-600 dark:text-emerald-400 font-black">{formatDetailed(res.totalVehicleCost)}</span>
+                  </div>
+                  {res.finalPayment !== res.monthlyPayment && (
+                    <p className="text-[11px] text-slate-500 pt-1">
+                      Final payment trued-up to {formatDetailed(res.finalPayment)} in Month {params.termMonths} so total principal matches exactly {format(res.totalFinanced)}.
+                    </p>
+                  )}
                 </div>
               </div>
-              <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl text-xs text-slate-500 dark:text-slate-400">
-                Governing Regulation: Truth in Lending Act (TILA), Regulation Z (12 CFR Part 1026).
+              <div className="p-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+                {res.aprLabel}
               </div>
             </GlassCard>
           </div>
@@ -1066,7 +1173,7 @@ export function AutoLoanModule({ currency }: { currency: any }) {
             Auto Loan Calculator: How to Estimate Monthly Car Payments, Sales Tax, Trade-In Credit, and Dealer Fees
           </h3>
           <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
-            <strong>Bottom Line Up Front (BLUF):</strong> Financing a vehicle involves calculating several upfront and recurring expenses beyond the vehicle sticker price. Your total financed amount is determined by adding state sales tax, title/registration charges, and dealer documentation fees to the vehicle purchase price, then subtracting your cash down payment and trade-in allowance. On a $38,000 vehicle in California with a $6,000 cash down payment, $4,000 trade-in credit, 7.25% sales tax ($2,465 after trade-in tax credit), $450 title/reg fees, and $350 doc fees, the net loan principal comes out to $31,265. At a 6.20% annual interest rate over a 60-month term, the monthly payment works out to $607, generating $5,176 in total interest charges for a overall transaction cost of $46,441.
+            <strong>Bottom Line Up Front (BLUF):</strong> Financing a vehicle involves calculating several upfront and recurring expenses beyond the vehicle sticker price. Your total financed amount is determined by adding state sales tax, title/registration charges, and dealer documentation fees to the vehicle purchase price, then subtracting your cash down payment and trade-in allowance. On a {format(workedExample.vehiclePrice)} vehicle in California with a {format(6000)} cash down payment, {format(workedExample.tradeInValue)} trade-in credit, 7.25% sales tax ({format(workedExample.salesTax)} on full vehicle price under Cal. Rev. &amp; Tax. Code § 6012 with no trade-in tax credit), {format(workedExample.titleFees)} title/reg fees, and {format(workedExample.dealerDocFee)} doc fees, the net loan principal comes out to {format(workedExample.totalFinanced)}. At a 6.20% annual interest rate over a 60-month term, the monthly payment works out to {format(workedExample.monthlyPayment)}, generating {format(workedExample.totalInterest)} in total interest charges for an overall transaction cost of {format(workedExample.totalVehicleCost)}.
           </p>
         </div>
 
@@ -1332,31 +1439,57 @@ export function AutoLoanModule({ currency }: { currency: any }) {
         {/* Step-by-Step Payment Calculation Example */}
         <GlassCard className="p-6 sm:p-8 space-y-6">
           <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">Step-by-Step Payment Calculation Example</h4>
-          <p className="text-sm text-slate-600 dark:text-slate-300">Using the scenario from the calculator image, here is the exact mathematical step-by-step breakdown:</p>
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            California benchmark worked example (under California law, sales tax applies to full vehicle purchase price with no trade-in deduction):
+          </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs sm:text-sm font-mono">
             <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-1.5">
               <div className="font-bold text-slate-900 dark:text-white text-sm mb-2">Deal Setup &amp; Net Loan (P)</div>
-              <div>Step 1: Vehicle Purchase Price: $38,000</div>
-              <div>Step 2: Less Trade-In Allowance: -$4,000</div>
-              <div>Step 3: Taxable Base Price (CA Rules: No Credit): $38,000</div>
-              <div>Step 4: State Sales Tax (7.25% on $38,000 − $4,000): $2,465</div>
-              <div>Step 5: Mandatory Title &amp; Registration Fees: +$450</div>
-              <div>Step 6: Dealer Administrative Documentation Fee: +$350</div>
-              <div className="pt-2 font-bold text-slate-900 dark:text-white">Gross Total Purchase Price: $41,265</div>
-              <div>Less Total Deductions ($6k Down + $4k Trade): -$10,000</div>
-              <div className="pt-1 font-black text-indigo-600 dark:text-indigo-400 text-sm">Net Amount Financed (P): $31,265</div>
+              <div>Step 1: Vehicle Purchase Price: {formatDetailed(workedExample.vehiclePrice)}</div>
+              <div>Step 2: Less Trade-In Allowance: -{formatDetailed(workedExample.tradeInValue)}</div>
+              <div>Step 3: Taxable Base Price (CA Rules: No Credit): {formatDetailed(workedExample.taxableBase)}</div>
+              <div>Step 4: State Sales Tax (7.25% on full {formatDetailed(workedExample.taxableBase)}): +{formatDetailed(workedExample.salesTax)}</div>
+              <div>Step 5: Mandatory Title &amp; Registration Fees: +{formatDetailed(workedExample.titleFees)}</div>
+              <div>Step 6: Dealer Administrative Documentation Fee: +{formatDetailed(workedExample.dealerDocFee)}</div>
+              <div className="pt-2 font-bold text-slate-900 dark:text-white">
+                Gross Total Purchase Price: {formatDetailed(workedExample.vehiclePrice + workedExample.salesTax + workedExample.fees)}
+              </div>
+              <div>Less Total Deductions ($6k Down + $4k Trade): -{formatDetailed(6000 + workedExample.tradeInValue)}</div>
+              <div className="pt-1 font-black text-indigo-600 dark:text-indigo-400 text-sm">
+                Net Amount Financed (P): {formatDetailed(workedExample.totalFinanced)}
+              </div>
             </div>
             <div className="p-4 bg-indigo-50 dark:bg-indigo-950/40 rounded-xl space-y-1.5 border border-indigo-200 dark:border-indigo-800">
               <div className="font-bold text-indigo-900 dark:text-indigo-200 text-sm mb-2">Financing &amp; Outlay Results</div>
               <div>• Quoted Interest Rate: 6.20%</div>
               <div>• Loan Term: 60 Months</div>
-              <div>• Monthly Interest Rate (r): 6.20% / 12 = 0.0051667</div>
-              <div className="pt-1 font-bold text-slate-900 dark:text-white text-sm">• Calculated Monthly Payment (M): $607.03 / mo</div>
-              <div>• Total Interest Paid Over 60 Months: $5,176.00</div>
-              <div>• Total Amount Paid on Loan ($31,265 + $5,176): $36,441.00</div>
-              <div className="pt-2 font-black text-emerald-600 dark:text-emerald-400 text-sm">• Total Transaction Cost: $46,441.00</div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">($36,441 loan payments + $10,000 cash down &amp; trade equity)</div>
+              <div>• Monthly Interest Rate (r): 6.20% / 12 = {(6.2 / 1200).toFixed(7)}</div>
+              <div className="pt-1 font-bold text-slate-900 dark:text-white text-sm">
+                • Calculated Monthly Payment (M): {formatDetailed(workedExample.monthlyPayment)} / mo
+              </div>
+              <div>• Final Trued-Up Payment (Month 60): {formatDetailed(workedExample.finalPayment)}</div>
+              <div>• Total Interest Paid Over 60 Months: {formatDetailed(workedExample.totalInterest)}</div>
+              <div>
+                • Total Amount Paid on Loan ({format(workedExample.totalFinanced)} + {format(workedExample.totalInterest)}): {formatDetailed(workedExample.totalPayments)}
+              </div>
+              <div className="pt-2 font-black text-emerald-600 dark:text-emerald-400 text-sm">
+                • Total Transaction Cost: {formatDetailed(workedExample.totalVehicleCost)}
+              </div>
+              <div className="text-xs text-slate-500 dark:text-slate-400">
+                ({formatDetailed(workedExample.totalPayments)} loan payments + {formatDetailed(6000 + workedExample.tradeInValue)} cash down &amp; trade equity)
+              </div>
             </div>
+          </div>
+
+          {/* Federal Auto Loan Interest Tax Deduction Advisory */}
+          <div className="p-4 sm:p-5 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-2xl space-y-2 font-sans">
+            <div className="flex items-center gap-2 font-bold text-blue-950 dark:text-blue-200 text-sm">
+              <Info size={18} className="text-blue-600 dark:text-blue-400 shrink-0" />
+              <span>Federal Auto-Loan Interest Tax Deduction Advisory (IRC § 163)</span>
+            </div>
+            <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
+              <strong>Statutory Overview:</strong> Under current Internal Revenue Code rules (IRC § 163(h)), interest paid on personal auto loans is classified as non-deductible personal interest unless the vehicle is used for business or trade purposes (IRC § 162). Recent federal policy proposals have considered introducing an above-the-line interest deduction for qualifying new, American-assembled passenger vehicles. Because statutory deduction caps, income phaseouts, and domestic assembly thresholds depend on enacted federal legislation, taxpayers should consult IRS Publication 535 and their CPA or tax advisor for current-year eligibility before claiming vehicle interest deductions.
+            </p>
           </div>
         </GlassCard>
 
@@ -2665,25 +2798,797 @@ export function PaymentCalculatorModule({ currency }: { currency: any }) {
 }
 
 /* ============================================================================
+ * 4.5. RETIREMENT & FIRE CALCULATOR MODULE
+ * ========================================================================== */
+export const US_RETIREMENT_STATE_TAX_LIST = [
+  { state: 'Alabama', treatment: 'Exempts defined benefit pensions', rate: '5.00%', protections: 'Traditional 401(k)/IRA withdrawals taxed' },
+  { state: 'Alaska', treatment: 'No State Income Tax', rate: '0.00%', protections: 'Zero state tax on all retirement withdrawals' },
+  { state: 'Arizona', treatment: 'Taxed as ordinary income', rate: '2.50%', protections: 'Low flat tax rate on distributions' },
+  { state: 'Arkansas', treatment: 'Up to $6,000 retirement exemption', rate: '4.40%', protections: 'Partial exemption for qualified distributions' },
+  { state: 'California', treatment: 'Taxed as ordinary income', rate: '13.30% (Up to 14.4%)', protections: 'Full state tax rates on pre-tax distributions' },
+  { state: 'Colorado', treatment: 'Exemption up to $24,000 for 65+', rate: '4.40%', protections: 'Flat tax rate with age-based deductions' },
+  { state: 'Connecticut', treatment: 'Phase-out exemptions for low/mid income', rate: '6.99%', protections: 'Partial exemptions on pension/401(k) income' },
+  { state: 'Delaware', treatment: 'Up to $12,000 exclusion for 60+', rate: '6.60%', protections: 'Graduated state income tax schedule' },
+  { state: 'Florida', treatment: 'No State Income Tax', rate: '0.00%', protections: 'Zero state tax on all retirement withdrawals' },
+  { state: 'Georgia', treatment: 'Up to $65,000 retirement exclusion for 65+', rate: '5.39%', protections: 'Generous exclusions for senior distributions' },
+  { state: 'Hawaii', treatment: 'Exempts public and private pensions', rate: '11.00%', protections: '401(k)/IRA distributions remain taxable' },
+  { state: 'Idaho', treatment: 'Taxed as ordinary income', rate: '5.69%', protections: 'Flat state income tax rate' },
+  { state: 'Illinois', treatment: 'Exempts Most Retirement Income', rate: '4.95%', protections: 'Excludes 401(k), IRA, and pension income' },
+  { state: 'Indiana', treatment: 'Taxed as ordinary income', rate: '3.05%', protections: 'Low flat tax rate on retirement income' },
+  { state: 'Iowa', treatment: 'Exempts Retirement Income for 55+', rate: '3.80%', protections: 'Complete exemption on retirement income for 55+' },
+  { state: 'Kansas', treatment: 'Exempts in-state public pensions', rate: '5.70%', protections: 'Out-of-state and private 401(k)/IRA taxed' },
+  { state: 'Kentucky', treatment: 'Excludes up to $31,110 retirement income', rate: '4.00%', protections: 'High exclusion threshold for retirees' },
+  { state: 'Louisiana', treatment: 'Excludes up to $6,000 for 65+', rate: '4.25%', protections: 'Low state income tax environment' },
+  { state: 'Maine', treatment: 'Up to $35,000 pension/IRA deduction', rate: '7.15%', protections: 'Moderate state deductions available' },
+  { state: 'Maryland', treatment: 'Pension exclusion up to statutory cap', rate: '5.75% (+ Local county tax)', protections: 'Combined state and county tax burden' },
+  { state: 'Massachusetts', treatment: 'Taxed as ordinary income', rate: '5.00%', protections: 'Flat state tax on IRA/401(k) distributions' },
+  { state: 'Michigan', treatment: 'Tiered age-based retirement deductions', rate: '4.25%', protections: 'Deductions vary by birth year tiers' },
+  { state: 'Minnesota', treatment: 'Taxed as ordinary income', rate: '9.85%', protections: 'Partial subtraction for social security' },
+  { state: 'Mississippi', treatment: 'Exempts Most Retirement Income', rate: '4.00%', protections: 'Complete state tax exemption on distributions' },
+  { state: 'Missouri', treatment: 'Complete deduction for qualifying incomes', rate: '4.80%', protections: 'Income caps apply for full exclusions' },
+  { state: 'Montana', treatment: 'Partial exclusion up to statutory limit', rate: '5.90%', protections: 'Two-bracket income tax system' },
+  { state: 'Nebraska', treatment: 'Phasing out tax on social security', rate: '5.84%', protections: 'Traditional 401(k)/IRA income taxed' },
+  { state: 'Nevada', treatment: 'No State Income Tax', rate: '0.00%', protections: 'Zero state tax on all retirement withdrawals' },
+  { state: 'New Hampshire', treatment: 'No Earned/Retirement Income Tax', rate: '0.00%', protections: 'Tax applies only to dividend/interest income' },
+  { state: 'New Jersey', treatment: 'Exclusions up to $100,000 for low/mid income', rate: '10.75%', protections: 'High exclusions for qualifying income tiers' },
+  { state: 'New Mexico', treatment: 'Exemption up to statutory limits for 65+', rate: '5.90%', protections: 'Graduated state income tax schedule' },
+  { state: 'New York', treatment: 'Excludes up to $20,000 for 59.5+', rate: '10.90% (+ NYC local tax)', protections: 'State and local taxes apply above limit' },
+  { state: 'North Carolina', treatment: 'Taxed as ordinary income', rate: '4.50%', protections: 'Low flat state income tax rate' },
+  { state: 'North Dakota', treatment: 'Taxed as ordinary income', rate: '2.50%', protections: 'Very low progressive tax brackets' },
+  { state: 'Ohio', treatment: 'Retirement income tax credits available', rate: '3.50%', protections: 'Credits offset low state tax liabilities' },
+  { state: 'Oklahoma', treatment: 'Up to $10,000 retirement exclusion', rate: '4.75%', protections: 'Moderate deduction for retirement income' },
+  { state: 'Oregon', treatment: 'Taxed as ordinary income', rate: '9.90%', protections: 'High progressive top state rate' },
+  { state: 'Pennsylvania', treatment: 'Exempts Most Retirement Income', rate: '3.07%', protections: 'Complete exemption on qualified retirement distributions' },
+  { state: 'Rhode Island', treatment: 'Partial exclusions for 65+', rate: '5.99%', protections: 'Exclusions subject to income eligibility limits' },
+  { state: 'South Carolina', treatment: 'Up to $10,000 retirement deduction', rate: '6.40%', protections: 'Age-based deductions for senior income' },
+  { state: 'South Dakota', treatment: 'No State Income Tax', rate: '0.00%', protections: 'Zero state tax on all retirement withdrawals' },
+  { state: 'Tennessee', treatment: 'No State Income Tax', rate: '0.00%', protections: 'Zero state tax on all retirement withdrawals' },
+  { state: 'Texas', treatment: 'No State Income Tax', rate: '0.00%', protections: 'Zero state tax on all retirement withdrawals' },
+  { state: 'Utah', treatment: 'Retirement tax credit available', rate: '4.55%', protections: 'Tax credit offsets flat state rate' },
+  { state: 'Vermont', treatment: 'Taxed as ordinary income', rate: '8.75%', protections: 'Progressive state income tax brackets' },
+  { state: 'Virginia', treatment: 'Up to $12,000 deduction for 65+', rate: '5.75%', protections: 'Age-based Virginia state deductions' },
+  { state: 'Washington', treatment: 'No State Income Tax', rate: '0.00%', protections: 'Zero state tax on retirement income' },
+  { state: 'West Virginia', treatment: 'Phasing out tax on social security', rate: '5.12%', protections: 'Graduated state income tax schedule' },
+  { state: 'Wisconsin', treatment: 'Up to $5,000 exclusion for 65+', rate: '7.65%', protections: 'Exclusions apply under income limits' },
+  { state: 'Wyoming', treatment: 'No State Income Tax', rate: '0.00%', protections: 'Zero state tax on all retirement withdrawals' }
+];
+
+export function RetirementModule({ currency }: { currency: any }) {
+  const [params, setParams] = useState({ 
+    age: 30, 
+    savings: 50000, 
+    monthly: 2000, 
+    expenses: 40253, 
+    return: 7, 
+    inflation: 2.5,
+    returnMode: 'real' as 'real' | 'nominal',
+    swr: 4,
+    horizonYears: 30,
+    adjustForTaxes: false,
+    useBracketTaxes: false,
+    retirementTaxRate: 15,
+    filingStatus: 'single' as 'single' | 'mfj' | 'mfs' | 'hoh',
+    stateCode: 'CA',
+    capitalGainsTaxDrag: 0.5
+  });
+
+  const res = useMemo(() => calculateRetirement({ 
+    currentAge: params.age, 
+    currentSavings: params.savings, 
+    monthlyContribution: params.monthly, 
+    annualExpenses: params.expenses, 
+    annualReturn: params.return, 
+    inflationRate: params.inflation,
+    returnMode: params.returnMode,
+    safeWithdrawalRate: params.swr,
+    horizonYears: params.horizonYears,
+    adjustForTaxes: params.adjustForTaxes,
+    useBracketTaxes: params.useBracketTaxes,
+    retirementTaxRatePercent: params.retirementTaxRate,
+    filingStatus: params.filingStatus,
+    stateCode: params.stateCode,
+    capitalGainsTaxDrag: params.capitalGainsTaxDrag
+  }), [params]);
+
+  const format = (v: number) => `${currency.symbol}${new Intl.NumberFormat().format(Math.round(v))}`;
+
+  return (
+    <div className="space-y-8 sm:space-y-12">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <div className="lg:col-span-4 space-y-6">
+          <GlassCard className="p-6 space-y-6">
+            <h3 className="text-lg font-black flex items-center gap-2 text-slate-900 dark:text-white">
+              <Zap size={20} className="text-amber-500" aria-hidden="true" /> FIRE Strategy (Trinity 4% Rule)
+            </h3>
+            <div className="grid grid-cols-2 gap-4">
+              <InputGroup label="Current Age" value={params.age} onChange={(v: number) => setParams({...params, age: v})} />
+              <InputGroup label="Planning Horizon" value={params.horizonYears} suffix=" yrs" onChange={(v: number) => setParams({...params, horizonYears: v})} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <InputGroup label="Safe Withdrawal Rate" value={params.swr} suffix="%" step="0.25" onChange={(v: number) => setParams({...params, swr: v})} />
+              <InputGroup label="Inflation Assumption" value={params.inflation} suffix="%" step="0.5" onChange={(v: number) => setParams({...params, inflation: v})} />
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">Return Presentation Mode</span>
+              <div className="grid grid-cols-2 gap-2 p-1.5 bg-slate-100 dark:bg-slate-800 rounded-2xl">
+                <button 
+                  type="button" 
+                  onClick={() => setParams({...params, returnMode: 'real'})}
+                  className={cn("min-h-[40px] px-2 rounded-xl text-xs font-bold uppercase transition-all", params.returnMode === 'real' ? "bg-white dark:bg-slate-700 text-amber-600 dark:text-amber-400 shadow-sm" : "text-slate-700 dark:text-slate-300")}
+                >
+                  Real (Today's $)
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => setParams({...params, returnMode: 'nominal'})}
+                  className={cn("min-h-[40px] px-2 rounded-xl text-xs font-bold uppercase transition-all", params.returnMode === 'nominal' ? "bg-white dark:bg-slate-700 text-amber-600 dark:text-amber-400 shadow-sm" : "text-slate-700 dark:text-slate-300")}
+                >
+                  Nominal (Future $)
+                </button>
+              </div>
+            </div>
+
+            <InputGroup label="Current Savings" value={params.savings} prefix={currency.symbol} onChange={(v: number) => setParams({...params, savings: v})} />
+            <InputGroup label="Monthly Invested" value={params.monthly} prefix={currency.symbol} onChange={(v: number) => setParams({...params, monthly: v})} />
+
+            {res.contributionWarning && (
+              <div className="p-3 bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-800 dark:text-amber-200 leading-relaxed">
+                {res.contributionWarning}
+                <div className="mt-2 pt-2 border-t border-amber-200 dark:border-amber-800">
+                  <InputGroup label="Taxable Capital Gains Drag %" value={params.capitalGainsTaxDrag} suffix="%" step="0.1" onChange={(v: number) => setParams({...params, capitalGainsTaxDrag: v})} />
+                </div>
+              </div>
+            )}
+
+            <InputGroup label="Annual Living Expenses" value={params.expenses} prefix={currency.symbol} onChange={(v: number) => setParams({...params, expenses: v})} />
+            <InputGroup label="Expected Investment Return (ROI)" value={params.return} suffix="%" step="0.5" onChange={(v: number) => setParams({...params, return: v})} />
+
+            {/* Tax-Adjusted FIRE Target Toggle & Setting */}
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-700 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-200 block">Tax-Adjusted FIRE Target</span>
+                  <span className="text-xs text-slate-500 dark:text-slate-400">Account for taxes on retirement withdrawals</span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={params.adjustForTaxes}
+                  onClick={() => setParams(p => ({ ...p, adjustForTaxes: !p.adjustForTaxes }))}
+                  className={cn(
+                    "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500",
+                    params.adjustForTaxes ? "bg-amber-500" : "bg-slate-300 dark:bg-slate-700"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                      params.adjustForTaxes ? "translate-x-5" : "translate-x-0"
+                    )}
+                  />
+                </button>
+              </div>
+
+              {params.adjustForTaxes && (
+                <div className="pt-2 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300">Use Federal Tax Engine Brackets</span>
+                    <input 
+                      type="checkbox" 
+                      checked={params.useBracketTaxes} 
+                      onChange={e => setParams({...params, useBracketTaxes: e.target.checked})}
+                      className="rounded text-amber-600 focus:ring-amber-500 w-4 h-4"
+                    />
+                  </div>
+
+                  {params.useBracketTaxes ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400">Filing Status</label>
+                        <select 
+                          value={params.filingStatus} 
+                          onChange={e => setParams({...params, filingStatus: e.target.value as any})}
+                          className="w-full px-2 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold text-slate-900 dark:text-white"
+                        >
+                          <option value="single">Single</option>
+                          <option value="mfj">Married Joint</option>
+                          <option value="mfs">Married Sep</option>
+                          <option value="hoh">Head of Household</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400">State</label>
+                        <select 
+                          value={params.stateCode} 
+                          onChange={e => setParams({...params, stateCode: e.target.value})}
+                          className="w-full px-2 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold text-slate-900 dark:text-white"
+                        >
+                          {['CA', 'TX', 'NY', 'FL', 'IL', 'PA', 'OH', 'GA', 'NC', 'MI', 'NJ', 'WA', 'AZ', 'MA', 'TN', 'IN', 'CO', 'MN'].map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  ) : (
+                    <InputGroup 
+                      label="Expected Retirement Tax Bracket" 
+                      value={params.retirementTaxRate} 
+                      suffix="%" 
+                      step="1" 
+                      onChange={(v: number) => setParams(p => ({ ...p, retirementTaxRate: v }))} 
+                    />
+                  )}
+
+                  <p className="text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+                    Gross annual withdrawal increases to <strong>{format(res.grossAnnualExpenses)}</strong> to provide <strong>{format(params.expenses)}</strong> net spend (Effective tax rate: {res.taxRatePercent.toFixed(1)}%).
+                  </p>
+                </div>
+              )}
+            </div>
+          </GlassCard>
+        </div>
+
+        <div className="lg:col-span-8 space-y-8">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <MetricCard 
+              label={params.adjustForTaxes ? "Gross FIRE Target (Tax-Adjusted)" : "FIRE Target (4% Rule)"} 
+              value={format(res.targetNetWorth)} 
+              subtext={params.adjustForTaxes ? `Standard net target: ${format(res.standardTargetNetWorth)}` : `25× annual expenses (${format(params.expenses)})`} 
+              icon={Landmark} 
+              color="bg-amber-600" 
+            />
+            <MetricCard 
+              label="Years to FIRE" 
+              value={`${res.yearsToFIRE.toFixed(1)} Years`} 
+              subtext={`Retire at age ${Math.round(res.fireAge)}`} 
+              icon={Compass} 
+              color="bg-blue-600" 
+            />
+            <MetricCard 
+              label="Monthly Spend" 
+              value={format(params.expenses / 12)} 
+              subtext="Required living budget" 
+              icon={Wallet} 
+              color="bg-slate-800 dark:bg-slate-700" 
+            />
+          </div>
+
+          <GlassCard className="p-6 lg:p-8 space-y-4">
+            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
+              <div>
+                <h4 className="text-sm font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                  FIRE Benchmark Formula ({params.swr}% SWR)
+                </h4>
+                <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5">
+                  Baseline standard derived from the Trinity Study (25× annual living expenses for a 30+ year retirement)
+                </p>
+              </div>
+              <div className="px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs sm:text-sm font-black">
+                Target: {format(res.targetNetWorth)}
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-100 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2 text-xs sm:text-sm font-medium text-slate-700 dark:text-slate-300">
+              <div className="flex justify-between py-1 border-b border-slate-200 dark:border-slate-700 font-mono">
+                <span>Standard 4% Rule Target:</span>
+                <span className="font-bold text-slate-900 dark:text-white">
+                  {format(params.expenses)} ÷ {(params.swr / 100).toFixed(2)} = {format(res.standardTargetNetWorth)}
+                </span>
+              </div>
+              {params.adjustForTaxes && (
+                <div className="flex justify-between py-1 border-b border-slate-200 dark:border-slate-700 font-mono">
+                  <span>Gross Tax-Adjusted Target ({params.retirementTaxRate}% tax):</span>
+                  <span className="font-bold text-amber-600 dark:text-amber-400">
+                    {format(res.grossAnnualExpenses)} ÷ {(params.swr / 100).toFixed(2)} = {format(res.targetNetWorth)}
+                  </span>
+                </div>
+              )}
+              <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 pt-1 leading-relaxed">
+                At a {params.swr}% withdrawal rate, your portfolio can sustainably generate {format(params.expenses)} in annual living expenses with high historical survival rates across multi-decade market cycles.
+              </p>
+            </div>
+          </GlassCard>
+
+          <GlassCard className="p-6 lg:p-8 space-y-6">
+            <h4 className="text-sm font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">The Path to Freedom</h4>
+            <div className="h-80" aria-label="FIRE Net Worth Path Chart">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={res.timeline}>
+                  <defs>
+                    <linearGradient id="colorFIRE" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.4}/>
+                      <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#cbd5e1" opacity={0.5} />
+                  <XAxis dataKey="age" fontSize={12} stroke="#64748b" tickFormatter={a => `Age ${Math.round(a)}`} />
+                  <YAxis hide />
+                  <ReTooltip contentStyle={{ borderRadius: '12px', border: '1px solid #cbd5e1', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }} />
+                  <Area type="monotone" dataKey="balance" stroke="#f59e0b" strokeWidth={3} fill="url(#colorFIRE)" name="Net Worth" />
+                  <Line type="monotone" dataKey="target" stroke="#94a3b8" strokeDasharray="5 5" dot={false} strokeWidth={2} name="FIRE Target" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </GlassCard>
+        </div>
+      </div>
+
+      {/* COMPREHENSIVE EDUCATIONAL GUIDE & FINANCIAL BENCHMARKS */}
+      <div className="space-y-6 sm:space-y-8 pt-4 sm:pt-6 border-t border-slate-200 dark:border-slate-800">
+        <div className="bg-slate-900 text-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl space-y-5 sm:space-y-6 shadow-xl">
+          <h3 className="text-xl sm:text-2xl font-black tracking-tight">
+            Retirement &amp; FIRE Calculator: How to Estimate Financial Independence, FIRE Target Nest Egg, and Years to Retire
+          </h3>
+          <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
+            <strong>Bottom Line Up Front (BLUF):</strong> Achieving Financial Independence, Retire Early (FIRE) hinges on determining your baseline FIRE nest egg target using the empirical 4% Safe Withdrawal Rate (SWR) rule established by the Trinity Study. Under this framework, your required financial independence corpus equals 25 times your expected annual living expenses. For a 30-year-old starting with $50,000 in current savings, investing $2,000 per month at a 7.00% expected annual investment return (ROI), and maintaining an annual living budget of $40,253 ($3,354 monthly spend), your target FIRE corpus is $1,006,325. At this rate of portfolio accumulation, you will achieve financial independence in 17.8 years, allowing you to retire at age 48.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <GlassCard className="p-6 space-y-4">
+            <h4 className="text-lg font-black text-slate-900 dark:text-white">Understanding Financial Independence and the FIRE Movement</h4>
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              Financial Independence, Retire Early (FIRE) is a financial strategy focused on maximizing savings rates, maintaining prudent living expenses, and systematically investing in yield-generating assets to reach a portfolio size capable of sustaining lifetime living expenses without mandatory employment.
+            </p>
+            <div className="space-y-1 text-xs sm:text-sm font-mono text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 p-4 rounded-xl">
+              <div className="font-bold text-amber-600 dark:text-amber-400">Total Financial Independence Ecosystem</div>
+              <div>├── Current Portfolio Capital: Initial baseline savings deployed in growth assets</div>
+              <div>├── Monthly Net Capital Inflow: Regular ongoing investments into low-cost market index funds</div>
+              <div>├── Cumulative Portfolio Compound Yield: Real annualized investment returns (ROI)</div>
+              <div>└── Target FIRE Portfolio Corpus: 25x Annual Living Expenses (SWR Capital Target)</div>
+            </div>
+          </GlassCard>
+
+          <GlassCard className="p-6 space-y-4">
+            <h4 className="text-lg font-black text-slate-900 dark:text-white">Key Financial Independence Metrics Defined</h4>
+            <ul className="space-y-2 text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              <li><strong>Current Age:</strong> Your starting age at the beginning of the accumulation phase (e.g., 30 years old).</li>
+              <li><strong>Safe Withdrawal Rate (SWR):</strong> The percentage of your total invested portfolio withdrawn annually in retirement to cover living expenses without exhausting capital over a 30-to-40-year horizon. The global empirical standard is 4.00%.</li>
+              <li><strong>Current Savings ($50,000):</strong> Liquid investment capital currently invested across tax-advantaged retirement accounts, individual brokerage accounts, or real estate assets.</li>
+              <li><strong>Monthly Invested ($2,000):</strong> Regular recurring capital contributed monthly to grow your investment portfolio.</li>
+              <li><strong>Annual Living Expenses ($40,253):</strong> Total annual out-of-pocket costs required to maintain your living standard ($3,354 monthly budget).</li>
+              <li><strong>Expected Investment Return (ROI) (7.00%):</strong> The projected net real annual rate of return on invested assets after accounting for baseline fee drags and inflation.</li>
+              <li><strong>FIRE Target ($1,006,325):</strong> The total accumulated investment corpus needed to safely generate $40,253 per year at a 4.00% safe withdrawal rate.</li>
+              <li><strong>Years to FIRE (17.8 Years):</strong> The total accumulation time required for your portfolio to compound from $50,000 to $1,006,325 with $2,000 monthly contributions at a 7.00% annual return.</li>
+            </ul>
+          </GlassCard>
+        </div>
+
+        {/* The Trinity Study and the Mathematics of the 4% Rule */}
+        <GlassCard className="p-6 sm:p-8 space-y-6">
+          <div className="space-y-2">
+            <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">The Trinity Study and the Mathematics of the 4% Rule</h4>
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              The foundational pillar of modern FIRE modeling is the 4% Rule, derived from the landmark 1998 Trinity Study (authored by Professors Cooley, Hubbard, and Walz at Trinity University). The study evaluated historical market performance across rolling 30-year retirement windows using diversified portfolios of equities and bonds.
+            </p>
+          </div>
+
+          <div className="p-5 bg-amber-50 dark:bg-amber-950/40 rounded-2xl space-y-3 border border-amber-200 dark:border-amber-800">
+            <div className="font-bold text-amber-900 dark:text-amber-200 text-base">The 4% Rule Formula Mechanics</div>
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              The target nest egg required for financial independence is the inverse of the Safe Withdrawal Rate:
+            </p>
+            <div className="p-4 bg-white dark:bg-slate-900 rounded-xl text-center space-y-1 shadow-sm border border-amber-200 dark:border-amber-800">
+              <div className="text-xs uppercase tracking-wider text-amber-600 dark:text-amber-400 font-bold">Standard SWR Capital Formula</div>
+              <div className="font-mono font-bold text-sm sm:text-base text-amber-600 dark:text-amber-400">
+                FIRE Target Corpus (S) = Annual Living Expenses / SWR = Annual Living Expenses × 25
+              </div>
+            </div>
+            <div className="p-3 bg-white/80 dark:bg-slate-900/80 rounded-xl font-mono text-xs sm:text-sm text-slate-700 dark:text-slate-300 space-y-1">
+              <div>For a target annual expenditure of $40,253:</div>
+              <div className="font-bold text-amber-700 dark:text-amber-300">
+                FIRE Target Corpus = $40,253 ÷ 0.04 = $40,253 × 25 = $1,006,325
+              </div>
+            </div>
+          </div>
+        </GlassCard>
+
+        {/* Variations of FIRE Strategies */}
+        <GlassCard className="p-6 sm:p-8 space-y-6">
+          <div className="space-y-2">
+            <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">Variations of FIRE Strategies</h4>
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              The FIRE movement incorporates several distinct lifestyle strategies tailored to different spending goals and risk tolerances:
+            </p>
+          </div>
+
+          <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-2xl">
+            <table className="w-full text-left text-xs sm:text-sm" aria-label="Variations of FIRE Strategies Table">
+              <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 uppercase tracking-wider font-bold">
+                <tr>
+                  <th scope="col" className="px-4 py-3">FIRE Strategy Variation</th>
+                  <th scope="col" className="px-4 py-3">Target Annual Expense Level</th>
+                  <th scope="col" className="px-4 py-3">Required Portfolio Multiple</th>
+                  <th scope="col" className="px-4 py-3">Typical Nest Egg Range</th>
+                  <th scope="col" className="px-4 py-3">Primary Lifestyle Target</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono">
+                <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                  <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">LeanFIRE</td>
+                  <td className="px-4 py-3 text-slate-700 dark:text-slate-300">Below $30,000 / year</td>
+                  <td className="px-4 py-3 text-amber-600 dark:text-amber-400 font-bold">25x Annual Expenses</td>
+                  <td className="px-4 py-3 text-slate-900 dark:text-white font-bold">$500,000 – $750,000</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Minimalist spending, hyper-frugal lifestyle</td>
+                </tr>
+                <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors bg-amber-50/40 dark:bg-amber-950/20">
+                  <td className="px-4 py-3 font-bold text-amber-800 dark:text-amber-300">Standard FIRE</td>
+                  <td className="px-4 py-3 text-slate-700 dark:text-slate-300">$40,000 – $80,000 / year</td>
+                  <td className="px-4 py-3 text-amber-600 dark:text-amber-400 font-bold">25x Annual Expenses</td>
+                  <td className="px-4 py-3 text-slate-900 dark:text-white font-bold">$1,000,000 – $2,000,000</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Standard moderate lifestyle replacement</td>
+                </tr>
+                <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                  <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">ChubbyFIRE</td>
+                  <td className="px-4 py-3 text-slate-700 dark:text-slate-300">$80,000 – $150,000 / year</td>
+                  <td className="px-4 py-3 text-amber-600 dark:text-amber-400 font-bold">25x to 28x Expenses</td>
+                  <td className="px-4 py-3 text-slate-900 dark:text-white font-bold">$2,000,000 – $4,200,000</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Upper-middle-class comfort with leisure buffer</td>
+                </tr>
+                <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                  <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">FatFIRE</td>
+                  <td className="px-4 py-3 text-slate-700 dark:text-slate-300">Above $150,000 / year</td>
+                  <td className="px-4 py-3 text-amber-600 dark:text-amber-400 font-bold">28x to 30x Expenses</td>
+                  <td className="px-4 py-3 text-slate-900 dark:text-white font-bold">$4,200,000+</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Luxury lifestyle without budget constraints</td>
+                </tr>
+                <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                  <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">BaristaFIRE</td>
+                  <td className="px-4 py-3 text-slate-700 dark:text-slate-300">Partial Expense Coverage</td>
+                  <td className="px-4 py-3 text-amber-600 dark:text-amber-400 font-bold">12.5x to 15x Expenses</td>
+                  <td className="px-4 py-3 text-slate-900 dark:text-white font-bold">$400,000 – $700,000</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Part-time work covers baseline lifestyle costs</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </GlassCard>
+
+        {/* How Savings Rate Accelerates Time to Retirement */}
+        <GlassCard className="p-6 sm:p-8 space-y-6">
+          <div className="space-y-2">
+            <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">How Savings Rate Accelerates Time to Retirement</h4>
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              Your savings rate—the percentage of gross income saved and invested rather than spent—is the single most important variable determining your timeline to financial independence. Higher savings rates simultaneously increase the capital invested each month and reduce the annual living expense target your portfolio must support.
+            </p>
+          </div>
+
+          <div className="space-y-2 text-sm text-slate-600 dark:text-slate-300">
+            <div className="font-bold text-base text-slate-900 dark:text-white">Impact of Savings Rate on Accumulation Horizon</div>
+            <div className="space-y-1 bg-slate-100 dark:bg-slate-800 p-4 rounded-xl font-mono text-xs sm:text-sm">
+              <div>├── 10% Savings Rate ──► Requires ~51.4 Years of Full-Time Work</div>
+              <div>├── 25% Savings Rate ──► Requires ~32.0 Years of Full-Time Work</div>
+              <div>├── 50% Savings Rate ──► Requires ~16.6 Years of Full-Time Work</div>
+              <div>└── 70% Savings Rate ──► Requires ~8.5 Years of Full-Time Work</div>
+            </div>
+          </div>
+
+          <div className="space-y-3 pt-2">
+            <h5 className="font-bold text-sm text-slate-900 dark:text-white uppercase tracking-wider">
+              Savings Rate vs. Years to Financial Independence (Assuming 7.00% Real Return &amp; 4% SWR)
+            </h5>
+            <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-2xl">
+              <table className="w-full text-left text-xs sm:text-sm" aria-label="Savings Rate vs Years to Financial Independence Table">
+                <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 uppercase tracking-wider font-bold">
+                  <tr>
+                    <th scope="col" className="px-4 py-3">Savings Rate (% of Net Income)</th>
+                    <th scope="col" className="px-4 py-3">Estimated Years to Reach FIRE</th>
+                    <th scope="col" className="px-4 py-3">Typical Working Career Horizon</th>
+                    <th scope="col" className="px-4 py-3">Net Working Horizon Reduction</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono">
+                  <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                    <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">10%</td>
+                    <td className="px-4 py-3 text-rose-600 dark:text-rose-400 font-bold">51.4 Years</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Standard Traditional Career</td>
+                    <td className="px-4 py-3 text-slate-500 dark:text-slate-400 font-sans">Baseline</td>
+                  </tr>
+                  <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                    <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">20%</td>
+                    <td className="px-4 py-3 text-slate-900 dark:text-white font-bold">36.7 Years</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Early Traditional Retirement</td>
+                    <td className="px-4 py-3 text-emerald-600 dark:text-emerald-400 font-bold">14.7 Years Earlier</td>
+                  </tr>
+                  <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                    <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">30%</td>
+                    <td className="px-4 py-3 text-slate-900 dark:text-white font-bold">28.0 Years</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Moderate Early Retirement</td>
+                    <td className="px-4 py-3 text-emerald-600 dark:text-emerald-400 font-bold">23.4 Years Earlier</td>
+                  </tr>
+                  <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                    <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">40%</td>
+                    <td className="px-4 py-3 text-slate-900 dark:text-white font-bold">21.6 Years</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Accelerated FIRE Target</td>
+                    <td className="px-4 py-3 text-emerald-600 dark:text-emerald-400 font-bold">29.8 Years Earlier</td>
+                  </tr>
+                  <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors bg-amber-50/40 dark:bg-amber-950/20">
+                    <td className="px-4 py-3 font-bold text-amber-700 dark:text-amber-300">50%</td>
+                    <td className="px-4 py-3 text-amber-600 dark:text-amber-400 font-bold">16.6 Years</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Standard Aggressive FIRE</td>
+                    <td className="px-4 py-3 text-emerald-600 dark:text-emerald-400 font-bold">34.8 Years Earlier</td>
+                  </tr>
+                  <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                    <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">60%</td>
+                    <td className="px-4 py-3 text-slate-900 dark:text-white font-bold">12.4 Years</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Ultra-Aggressive FIRE</td>
+                    <td className="px-4 py-3 text-emerald-600 dark:text-emerald-400 font-bold">39.0 Years Earlier</td>
+                  </tr>
+                  <tr className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                    <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">70%</td>
+                    <td className="px-4 py-3 text-emerald-600 dark:text-emerald-400 font-bold">8.5 Years</td>
+                    <td className="px-4 py-3 text-slate-600 dark:text-slate-400 font-sans">Extreme Hyper-Saver FIRE</td>
+                    <td className="px-4 py-3 text-emerald-600 dark:text-emerald-400 font-bold">42.9 Years Earlier</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </GlassCard>
+
+        {/* The Compound Accumulation Growth Formula */}
+        <GlassCard className="p-6 sm:p-8 space-y-6">
+          <div className="space-y-2">
+            <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">The Compound Accumulation Growth Formula</h4>
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              Portfolio accumulation during the pre-retirement growth phase combines compound interest on initial savings with the future value of monthly contributions:
+            </p>
+          </div>
+
+          <div className="p-5 bg-slate-50 dark:bg-slate-800 rounded-2xl space-y-3 border border-slate-200 dark:border-slate-700">
+            <div className="p-4 bg-white dark:bg-slate-900 rounded-xl text-center space-y-1 shadow-sm border border-slate-200 dark:border-slate-700/60">
+              <div className="text-xs uppercase tracking-wider text-amber-600 dark:text-amber-400 font-bold">Future Value of Investment Growth</div>
+              <div className="font-mono font-bold text-sm sm:text-base text-amber-600 dark:text-amber-400">
+                V(t) = P • (1 + r)ᵗ + PMT • [ ((1 + r)ᵗ - 1) / r ]
+              </div>
+            </div>
+            <div className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 space-y-1 font-mono">
+              <div>V(t) = Total Accumulated Portfolio Balance at Year t</div>
+              <div>P = Starting Current Savings ($50,000)</div>
+              <div>PMT = Annual Investment Addition ($2,000 × 12 = $24,000)</div>
+              <div>r = Annual Real Investment Return (7.00% or 0.07)</div>
+              <div>t = Duration in Years (17.8 Years)</div>
+            </div>
+          </div>
+
+          <div className="space-y-2 text-sm text-slate-600 dark:text-slate-300">
+            <div className="font-bold text-base text-slate-900 dark:text-white">Portfolio Balance Trajectory over 17.8 Years ($50,000 Start + $2,000/mo at 7% ROI)</div>
+            <div className="space-y-1 bg-slate-100 dark:bg-slate-800 p-4 rounded-xl font-mono text-xs sm:text-sm">
+              <div>├── Year 1 (Age 31):   $77,900  (Contributions: $24,000 | Interest: $3,900)</div>
+              <div>├── Year 5 (Age 35):   $212,410 (Contributions: $120,000 | Interest: $42,410)</div>
+              <div>├── Year 10 (Age 40):  $448,510 (Contributions: $240,000 | Interest: $158,510)</div>
+              <div>├── Year 15 (Age 45):  $779,840 (Contributions: $360,000 | Interest: $369,840)</div>
+              <div>└── Year 17.8 (Age 48):$1,006,325 (Contributions: $427,200 | Interest: $529,125)</div>
+            </div>
+            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 italic pt-1">
+              At the target age of 48, cumulative investment returns ($529,125) exceed total out-of-pocket capital contributions ($427,200), demonstrating the power of long-term financial compounding.
+            </p>
+          </div>
+        </GlassCard>
+
+        {/* Tax-Advantaged Retirement Accounts and Pre-Tax Adjustments */}
+        <GlassCard className="p-6 sm:p-8 space-y-6">
+          <div className="space-y-2">
+            <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">Tax-Advantaged Retirement Accounts and Pre-Tax Adjustments</h4>
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              Achieving financial independence efficiently requires leveraging tax-advantaged accounts in the United States. Balancing pre-tax retirement vehicles with taxable brokerage accounts ensures both tax optimization and liquidity prior to traditional retirement age (59.5).
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm text-slate-700 dark:text-slate-300">
+            <div className="p-5 bg-slate-50 dark:bg-slate-800 rounded-2xl space-y-3 border border-slate-200 dark:border-slate-700">
+              <h5 className="font-bold text-slate-900 dark:text-white text-base">Core U.S. Account Types for FIRE Planning</h5>
+              <ul className="space-y-2 leading-relaxed">
+                <li><strong>401(k) / 403(b) Employer Plans:</strong> Allow high pre-tax contributions ($23,500 annual limit for 2026). Growth accumulates tax-deferred, reducing taxable income during your peak earning years.</li>
+                <li><strong>Individual Retirement Accounts (Traditional &amp; Roth IRA):</strong> Annual contribution limits ($7,000 limit for 2026). Roth IRAs allow tax-free withdrawals in retirement, while Traditional IRAs offer upfront tax deductions.</li>
+                <li><strong>Health Savings Accounts (HSA):</strong> Offers triple tax advantages—pre-tax contributions, tax-free growth, and tax-free withdrawals for qualified medical expenses.</li>
+                <li><strong>Taxable Brokerage Accounts:</strong> Crucial for early retirees before age 59.5. Offers no contribution limits and qualifies for long-term capital gains tax rates (0%, 15%, or 20%) rather than ordinary income tax rates.</li>
+              </ul>
+            </div>
+
+            <div className="p-5 bg-slate-50 dark:bg-slate-800 rounded-2xl space-y-3 border border-slate-200 dark:border-slate-700">
+              <h5 className="font-bold text-slate-900 dark:text-white text-base">Early Access Strategies Before Age 59.5</h5>
+              <p className="leading-relaxed">
+                Early retirees can access pre-tax retirement funds before age 59.5 without paying early withdrawal penalties by using established IRS tax frameworks:
+              </p>
+              <ul className="space-y-3 leading-relaxed">
+                <li><strong>Roth IRA Conversion Ladder:</strong> Convert pre-tax 401(k) funds to a Roth IRA annually. After a mandatory 5-year holding period, converted principal balances can be withdrawn tax- and penalty-free.</li>
+                <li><strong>Rule 72(t) / SEPP (Substantially Equal Periodic Payments):</strong> Allows early penalty-free distributions from traditional IRAs based on IRS life expectancy tables, provided payments continue for at least 5 years or until age 59.5 (whichever is longer).</li>
+              </ul>
+            </div>
+          </div>
+        </GlassCard>
+
+        {/* Complete 50-State Income Tax Overview for Retirement Withdrawals */}
+        <GlassCard className="p-6 sm:p-8 space-y-6">
+          <div className="space-y-2">
+            <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">
+              Complete 50-State Income Tax Overview for Retirement Withdrawals
+            </h4>
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              Retirement portfolio withdrawals are subject to state income taxes in states that tax personal income or investment distributions. Use the complete reference table below to analyze state tax environments for retirement planning.
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            <h5 className="font-bold text-sm text-slate-900 dark:text-white uppercase tracking-wider">
+              All 50 U.S. States Retirement Tax Environment Overview
+            </h5>
+            <div className="overflow-x-auto max-h-[440px] border border-slate-200 dark:border-slate-700 rounded-2xl">
+              <table className="w-full text-left text-xs sm:text-sm" aria-label="All 50 U.S. States Retirement Tax Environment Overview">
+                <thead className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 uppercase tracking-wider font-bold sticky top-0 z-10">
+                  <tr>
+                    <th scope="col" className="px-4 py-3">State</th>
+                    <th scope="col" className="px-4 py-3">State Income Tax Treatment on Retirement</th>
+                    <th scope="col" className="px-4 py-3">Top Marginal State Rate</th>
+                    <th scope="col" className="px-4 py-3">Primary Retirement Tax Protections</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono">
+                  {US_RETIREMENT_STATE_TAX_LIST.map((row, idx) => (
+                    <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                      <td className="px-4 py-2 font-bold text-slate-900 dark:text-white">{row.state}</td>
+                      <td className="px-4 py-2 text-slate-700 dark:text-slate-300 font-sans">{row.treatment}</td>
+                      <td className="px-4 py-2 text-amber-600 dark:text-amber-400 font-bold">{row.rate}</td>
+                      <td className="px-4 py-2 text-slate-600 dark:text-slate-400 font-sans">{row.protections}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </GlassCard>
+
+        {/* Step-by-Step Mathematical Calculation Walkthrough */}
+        <GlassCard className="p-6 sm:p-8 space-y-6">
+          <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">
+            Step-by-Step Mathematical Calculation Walkthrough
+          </h4>
+          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+            Using the input parameters from the calculator setup, here is the complete mathematical step-by-step breakdown:
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs sm:text-sm font-mono">
+            <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-xl space-y-2">
+              <div className="font-bold text-slate-900 dark:text-white text-sm mb-2">Inputs:</div>
+              <div>• Current Age:                         30 Years</div>
+              <div>• Safe Withdrawal Rate (SWR):          4.00% (0.04)</div>
+              <div>• Current Savings (P):                 $50,000.00</div>
+              <div>• Monthly Investment (PMT_m):          $2,000.00 ($24,000.00 per year)</div>
+              <div>• Expected Annual Return (r):          7.00% (0.07 real return)</div>
+              <div>• Target Annual Living Expenses (E):   $40,253.00</div>
+              <div className="pt-2 border-t border-slate-200 dark:border-slate-700">
+                <div className="font-bold text-slate-900 dark:text-white">Step 1: Calculate Target FIRE Corpus</div>
+                <div>Corpus Target = E / SWR</div>
+                <div>Corpus Target = $40,253 / 0.04 = $1,006,325.00</div>
+              </div>
+            </div>
+
+            <div className="p-4 bg-amber-50 dark:bg-amber-950/40 rounded-xl space-y-2 border border-amber-200 dark:border-amber-800">
+              <div className="space-y-1">
+                <div className="font-bold text-amber-900 dark:text-amber-200 text-sm">Step 2: Solve for Accumulation Timeline (t)</div>
+                <div>Set Portfolio Growth Formula equal to $1,006,325:</div>
+                <div className="text-xs sm:text-sm">$1,006,325 = $50,000 × (1.07)^t + $24,000 × [((1.07)^t - 1) / 0.07]</div>
+                <div className="font-bold text-amber-700 dark:text-amber-300 pt-1">Solving for t yields: t ≈ 17.80 Years</div>
+              </div>
+              <div className="pt-2 border-t border-amber-200 dark:border-amber-800 space-y-1">
+                <div className="font-bold text-amber-900 dark:text-amber-200 text-sm">Step 3: Calculate Retirement Age</div>
+                <div>Retirement Age = Current Age + t</div>
+                <div className="font-bold text-amber-700 dark:text-amber-300">Retirement Age = 30 + 17.8 = 47.8 Years Old (Rounded to Age 48)</div>
+              </div>
+              <div className="pt-2 border-t border-amber-200 dark:border-amber-800 font-bold text-emerald-700 dark:text-emerald-400">
+                <div>Financial Summary:</div>
+                <div>• Required Living Budget:              $3,354.42 / month ($40,253 / yr)</div>
+                <div>• FIRE Nest Egg Target:                $1,006,325.00</div>
+                <div>• Time to Reach Target:                17.8 Years</div>
+                <div>• Target Early Retirement Age:         48 Years Old</div>
+              </div>
+            </div>
+          </div>
+        </GlassCard>
+
+        {/* 5 Practical Strategies to Accelerate Your FIRE Timeline */}
+        <GlassCard className="p-6 sm:p-8 space-y-6">
+          <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">
+            5 Practical Strategies to Accelerate Your FIRE Timeline
+          </h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-1.5">
+              <h5 className="font-bold text-slate-900 dark:text-white text-base">1. Increase Your Savings Rate</h5>
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed text-sm">
+                Because savings rate drives timeline exponentially, increasing your savings rate from 30% to 50% can shorten your working career by more than 11 years.
+              </p>
+            </div>
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-1.5">
+              <h5 className="font-bold text-slate-900 dark:text-white text-base">2. Optimize Investment Asset Allocation</h5>
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed text-sm">
+                Maintain a low-cost, broadly diversified portfolio dominated by low-expense equity index funds (e.g., total stock market index funds) during the accumulation phase to capture market growth.
+              </p>
+            </div>
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-1.5">
+              <h5 className="font-bold text-slate-900 dark:text-white text-base">3. Minimize Investment Management Fees</h5>
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed text-sm">
+                Keeping expense ratios below 0.05% saves tens of thousands of dollars in compounding drag over a 15-to-20-year accumulation horizon.
+              </p>
+            </div>
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-1.5">
+              <h5 className="font-bold text-slate-900 dark:text-white text-base">4. Utilize Health Savings Accounts (HSAs)</h5>
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed text-sm">
+                Maximize HSA contributions to secure triple-tax savings for long-term health and medical costs in early retirement.
+              </p>
+            </div>
+            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-1.5 md:col-span-2">
+              <h5 className="font-bold text-slate-900 dark:text-white text-base">5. Incorporate Geographic Arbitrage</h5>
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed text-sm">
+                Moving to a lower-cost region or state with no income tax in retirement reduces your annual expense baseline (E), instantly lowering your target FIRE nest egg requirement.
+              </p>
+            </div>
+          </div>
+        </GlassCard>
+
+        {/* FAQs */}
+        <GlassCard className="p-6 sm:p-8 space-y-6">
+          <h4 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white">Frequently Asked Questions</h4>
+          <div className="space-y-4">
+            {[
+              {
+                q: "What is Sequence of Returns Risk (SRR)?",
+                a: "Sequence of Returns Risk is the risk that market downturns occur in the early years of retirement while you are making withdrawals. Experiencing negative returns early in retirement depletes portfolio principal faster, increasing the risk of running out of money. FIRE practitioners mitigate this risk by maintaining a 1-to-3-year cash and short-term bond cushion to avoid selling equities during market declines."
+              },
+              {
+                q: "What is the difference between nominal returns and real returns in FIRE calculations?",
+                a: "Nominal returns reflect absolute investment growth before inflation. Real returns account for inflation (e.g., subtracting 2% to 3% annual inflation from a 10% nominal return to arrive at a 7% real return). FIRE calculations use real returns to project future purchasing power in today's dollar terms."
+              },
+              {
+                q: "Can I withdraw money from my Roth IRA before age 59.5 without penalty?",
+                a: "Yes. Contributions made to a Roth IRA can be withdrawn at any time, at any age, tax- and penalty-free. However, earnings on contributions are subject to taxes and penalties if withdrawn prior to age 59.5 without meeting specific IRS exceptions."
+              },
+              {
+                q: "What is Flex-FIRE or Dynamic Withdrawal Strategy?",
+                a: "A Dynamic Withdrawal Strategy involves adjusting annual retirement spending based on market performance rather than withdrawing a fixed 4% every year. Reducing spending by 10% to 20% during market downturns drastically reduces portfolio failure risk and allows for lower initial target nest eggs."
+              },
+              {
+                q: "How does healthcare coverage work for early retirees in the U.S. before Medicare age (65)?",
+                a: "Early retirees before age 65 obtain health insurance through state or federal ACA Health Insurance Exchanges (Obamacare), COBRA coverage, private health plans, or Health Savings Accounts (HSAs). Controlling taxable income in early retirement can also help retirees qualify for Premium Tax Credits (subsidies) under the ACA."
+              }
+            ].map((faq, idx) => (
+              <div key={idx} className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2">
+                <h5 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white">{faq.q}</h5>
+                <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">{faq.a}</p>
+              </div>
+            ))}
+          </div>
+        </GlassCard>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
  * 5. AMORTIZATION CALCULATOR MODULE
  * ========================================================================== */
 export function AmortizationModule({ currency }: { currency: any }) {
-  const [params, setParams] = useState({
-    loanAmount: 320000,
-    rate: 6.75,
-    termYears: 30,
-    startDate: '2026-10',
-    extraMonthly: 100
+  const [params, setParams] = useState(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() + 1);
+    const defaultDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    return {
+      loanAmount: 320000,
+      rate: 6.75,
+      termYears: 30,
+      startDate: defaultDate,
+      extraMonthly: 100
+    };
   });
 
   const [scheduleView, setScheduleView] = useState<'yearly' | 'monthly'>('yearly');
 
   const res = useMemo(() => calculateMortgage({
+    loanProgram: 'conventional',
     homePrice: params.loanAmount,
     downPayment: 0,
     annualRate: params.rate,
     termYears: params.termYears,
     startDate: params.startDate,
+    pmiAnnual: 0,
     extraMonthly: params.extraMonthly
   }), [params]);
 
@@ -3006,23 +3911,53 @@ export function FinanceTVMModule({ currency }: { currency: any }) {
  * 8. INCOME TAX CALCULATOR MODULE (US JURISDICTION ONLY)
  * ========================================================================== */
 export function IncomeTaxModule({ currency }: { currency: any }) {
-  const [year, setYear] = useState<number>(2024);
+  const [year, setYear] = useState<number>(DEFAULT_TAX_YEAR);
   const [filingStatus, setFilingStatus] = useState<FilingStatus>('single');
   const [stateCode, setStateCode] = useState<string>('CA');
   const [annualIncome, setAnnualIncome] = useState<number>(95000);
+  const [age, setAge] = useState<number>(35);
+  const [hsaCoverage, setHsaCoverage] = useState<'single' | 'family'>('single');
   const [preTax401k, setPreTax401k] = useState<number>(6000);
   const [preTaxHsaFsa, setPreTaxHsaFsa] = useState<number>(0);
-  const [useCustomDeduction, setUseCustomDeduction] = useState<boolean>(false);
-  const [customDeduction, setCustomDeduction] = useState<number>(14600);
+  const [deductionMode, setDeductionMode] = useState<'standard' | 'itemized'>('standard');
+  const [itemizedAmount, setItemizedAmount] = useState<number>(10000);
 
-  // Auto-sync standard deduction when year or filing status changes
-  useEffect(() => {
-    const yrConfig = US_TAX_CONFIG_BY_YEAR[year] || US_TAX_CONFIG_BY_YEAR[2024];
-    const std = yrConfig.standardDeduction[filingStatus]?.value || 14600;
-    if (!useCustomDeduction) {
-      setCustomDeduction(std);
+  const yrConfig = US_TAX_CONFIG_BY_YEAR[year] || US_TAX_CONFIG_BY_YEAR[DEFAULT_TAX_YEAR];
+  const standardDeductionVal = yrConfig?.standardDeduction[filingStatus]?.value || 0;
+
+  // Contribution limits calculation based on year and age
+  const retLimits = yrConfig?.retirementLimits;
+  const max401kLimit = useMemo(() => {
+    if (!retLimits) return 24500;
+    const base = retLimits.elective401kLimit.value;
+    if (age >= 60 && age <= 63) {
+      return base + (retLimits.catchUp401kSpecialAge60_63?.value || retLimits.catchUp401kAge50.value);
+    } else if (age >= 50) {
+      return base + retLimits.catchUp401kAge50.value;
     }
-  }, [year, filingStatus, useCustomDeduction]);
+    return base;
+  }, [retLimits, age]);
+
+  const maxHsaLimit = useMemo(() => {
+    if (!retLimits) return 4400;
+    const base = hsaCoverage === 'family' ? retLimits.hsaFamilyLimit.value : retLimits.hsaSingleLimit.value;
+    // HSA 55+ catch-up is $1,000
+    return age >= 55 ? base + 1000 : base;
+  }, [retLimits, hsaCoverage, age]);
+
+  const maxFsaLimit = useMemo(() => {
+    return retLimits?.healthcareFsaLimit?.value || 3400;
+  }, [retLimits]);
+
+  // Combined max for HSA / FSA field
+  const maxHsaFsaAllowed = maxHsaLimit + maxFsaLimit;
+
+  // Cap effective values used in calculation
+  const capped401k = Math.min(preTax401k, max401kLimit);
+  const cappedHsaFsa = Math.min(preTaxHsaFsa, maxHsaFsaAllowed);
+
+  const is401kOverLimit = preTax401k > max401kLimit;
+  const isHsaFsaOverLimit = preTaxHsaFsa > maxHsaFsaAllowed;
 
   const taxResult = useMemo(() => {
     return calculateComprehensiveTax({
@@ -3030,11 +3965,12 @@ export function IncomeTaxModule({ currency }: { currency: any }) {
       year,
       filingStatus,
       stateCode,
-      preTax401k,
-      preTaxHsaFsa,
-      itemizedDeductions: useCustomDeduction ? customDeduction : undefined
+      preTax401k: capped401k,
+      preTaxHsaFsa: cappedHsaFsa,
+      itemizedDeductions: deductionMode === 'itemized' ? itemizedAmount : undefined,
+      deductionMode
     });
-  }, [annualIncome, year, filingStatus, stateCode, preTax401k, preTaxHsaFsa, useCustomDeduction, customDeduction]);
+  }, [annualIncome, year, filingStatus, stateCode, capped401k, cappedHsaFsa, deductionMode, itemizedAmount]);
 
   const format = (v: number) => `$${new Intl.NumberFormat().format(Math.round(v))}`;
   const formatDetailed = (v: number) => `$${new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)}`;
@@ -3044,11 +3980,11 @@ export function IncomeTaxModule({ currency }: { currency: any }) {
     { name: 'Federal Income Tax', value: taxResult.federalTax, color: '#ef4444' },
     { name: 'FICA (SS & Medicare)', value: taxResult.ficaTax, color: '#f59e0b' },
     ...(taxResult.stateTax > 0 ? [{ name: `${taxResult.stateCode} State Tax`, value: taxResult.stateTax, color: '#6366f1' }] : []),
-    ...(preTax401k > 0 ? [{ name: 'Pre-Tax 401(k)', value: preTax401k, color: '#06b6d4' }] : []),
-    ...(preTaxHsaFsa > 0 ? [{ name: 'Pre-Tax HSA/FSA', value: preTaxHsaFsa, color: '#14b8a6' }] : []),
+    ...(capped401k > 0 ? [{ name: 'Pre-Tax 401(k)', value: capped401k, color: '#06b6d4' }] : []),
+    ...(cappedHsaFsa > 0 ? [{ name: 'Pre-Tax HSA/FSA', value: cappedHsaFsa, color: '#14b8a6' }] : []),
   ];
 
-  const stateCfg = getStateConfig(stateCode);
+  const stateCfg = getStateConfig(stateCode, year);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -3070,7 +4006,7 @@ export function IncomeTaxModule({ currency }: { currency: any }) {
               Tax Year
             </label>
             <div className="grid grid-cols-3 gap-2">
-              {[2024, 2025, 2026].map(y => (
+              {SUPPORTED_TAX_YEARS.map(y => (
                 <button
                   key={y}
                   type="button"
@@ -3082,7 +4018,7 @@ export function IncomeTaxModule({ currency }: { currency: any }) {
                       : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-200"
                   )}
                 >
-                  {y} {y === 2026 && <span className="text-xs opacity-80 font-normal">(Proj)</span>}
+                  {y}
                 </button>
               ))}
             </div>
@@ -3117,13 +4053,36 @@ export function IncomeTaxModule({ currency }: { currency: any }) {
             </div>
           </div>
 
+          {/* Age & HSA Coverage inputs */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <InputGroup 
+              label="Taxpayer Age" 
+              value={age} 
+              onChange={(v: number) => setAge(Math.max(18, Math.min(100, Math.round(v) || 18)))} 
+            />
+            <div className="space-y-1.5">
+              <label htmlFor="tax-hsa-coverage" className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">
+                HSA Coverage Plan
+              </label>
+              <select
+                id="tax-hsa-coverage"
+                value={hsaCoverage}
+                onChange={(e) => setHsaCoverage(e.target.value as 'single' | 'family')}
+                className="w-full min-h-[44px] bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-xl px-4 text-xs sm:text-sm font-bold text-slate-900 dark:text-white outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+              >
+                <option value="single">Self-Only (${new Intl.NumberFormat().format(retLimits?.hsaSingleLimit?.value || 4400)})</option>
+                <option value="family">Family (${new Intl.NumberFormat().format(retLimits?.hsaFamilyLimit?.value || 8750)})</option>
+              </select>
+            </div>
+          </div>
+
           {/* State Jurisdiction Selector */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between ml-1">
               <label htmlFor="tax-state-select" className="block text-xs font-bold text-slate-800 dark:text-slate-200">
                 State Jurisdiction
               </label>
-              {!stateCfg.hasIncomeTax && (
+              {!stateCfg.hasIncomeTax && !stateCfg.warning && (
                 <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-200 dark:border-emerald-800">
                   0% State Income Tax
                 </span>
@@ -3143,6 +4102,14 @@ export function IncomeTaxModule({ currency }: { currency: any }) {
             </select>
           </div>
 
+          {/* Visible State Banner if State Not Modeled */}
+          {stateCfg.warning && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-xs text-amber-700 dark:text-amber-300 flex items-center gap-2">
+              <ShieldAlert size={16} className="shrink-0 text-amber-600" />
+              <span><strong>State income tax not modeled for {stateCfg.stateCode}:</strong> Federal income tax and FICA taxes are calculated; state tax is treated as $0.00.</span>
+            </div>
+          )}
+
           {/* Gross Annual Salary */}
           <InputGroup 
             label="Gross Annual Salary" 
@@ -3151,43 +4118,89 @@ export function IncomeTaxModule({ currency }: { currency: any }) {
             onChange={(v: number) => setAnnualIncome(v)} 
           />
 
-          {/* Pre-Tax Deductions */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <InputGroup 
-              label="Pre-Tax 401(k) / 403(b)" 
-              value={preTax401k} 
-              prefix="$" 
-              onChange={(v: number) => setPreTax401k(v)} 
-            />
-            <InputGroup 
-              label="Pre-Tax HSA / FSA" 
-              value={preTaxHsaFsa} 
-              prefix="$" 
-              onChange={(v: number) => setPreTaxHsaFsa(v)} 
-            />
+          {/* Pre-Tax Deductions with Limit Warnings */}
+          <div className="space-y-4">
+            <div>
+              <InputGroup 
+                label={`Pre-Tax 401(k) / 403(b) (Max: ${format(max401kLimit)})`} 
+                value={preTax401k} 
+                prefix="$" 
+                onChange={(v: number) => setPreTax401k(v)} 
+              />
+              {is401kOverLimit && (
+                <p className="mt-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
+                  Warning: Exceeds annual 401(k) limit of {format(max401kLimit)} for age {age}. Amount used in tax calculation is capped at {format(max401kLimit)}.
+                </p>
+              )}
+            </div>
+
+            <div>
+              <InputGroup 
+                label={`Pre-Tax HSA / Healthcare FSA (Combined Max: ${format(maxHsaFsaAllowed)})`} 
+                value={preTaxHsaFsa} 
+                prefix="$" 
+                onChange={(v: number) => setPreTaxHsaFsa(v)} 
+              />
+              {isHsaFsaOverLimit && (
+                <p className="mt-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
+                  Warning: Exceeds combined annual statutory limit of {format(maxHsaFsaAllowed)} (HSA {format(maxHsaLimit)} + FSA {format(maxFsaLimit)}). Amount used is capped at {format(maxHsaFsaAllowed)}.
+                </p>
+              )}
+            </div>
           </div>
 
-          {/* Standard vs Itemized Deductions */}
-          <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+          {/* Standard vs Itemized Deductions Toggle */}
+          <div className="space-y-3 pt-3 border-t border-slate-200 dark:border-slate-700">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                Federal Standard Deduction: {format(taxResult.federalStandardDeduction)}
-              </span>
-              <button
-                type="button"
-                onClick={() => setUseCustomDeduction(!useCustomDeduction)}
-                className="text-xs text-indigo-600 dark:text-indigo-400 font-bold hover:underline"
-              >
-                {useCustomDeduction ? 'Reset to Standard' : 'Itemize Instead'}
-              </button>
+              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">
+                Deduction Type
+              </label>
+              <div className="inline-flex rounded-lg border border-slate-300 dark:border-slate-600 p-0.5 bg-slate-100 dark:bg-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setDeductionMode('standard')}
+                  className={cn(
+                    "px-3 py-1 text-xs font-bold rounded-md transition-all",
+                    deductionMode === 'standard'
+                      ? "bg-indigo-600 text-white shadow-xs"
+                      : "text-slate-600 dark:text-slate-300 hover:text-slate-900"
+                  )}
+                >
+                  Standard
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeductionMode('itemized')}
+                  className={cn(
+                    "px-3 py-1 text-xs font-bold rounded-md transition-all",
+                    deductionMode === 'itemized'
+                      ? "bg-indigo-600 text-white shadow-xs"
+                      : "text-slate-600 dark:text-slate-300 hover:text-slate-900"
+                  )}
+                >
+                  Itemized
+                </button>
+              </div>
             </div>
-            {useCustomDeduction && (
-              <InputGroup 
-                label="Custom Itemized Deductions" 
-                value={customDeduction} 
-                prefix="$" 
-                onChange={(v: number) => setCustomDeduction(v)} 
-              />
+
+            {deductionMode === 'standard' ? (
+              <div className="p-3 bg-slate-100 dark:bg-slate-800/80 rounded-xl text-xs text-slate-700 dark:text-slate-300">
+                <span className="font-bold">Federal Standard Deduction:</span> {format(standardDeductionVal)} for {filingStatus.toUpperCase()} in {year}.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <InputGroup 
+                  label="Itemized Deductions Amount" 
+                  value={itemizedAmount} 
+                  prefix="$" 
+                  onChange={(v: number) => setItemizedAmount(Math.max(0, v))} 
+                />
+                {itemizedAmount < standardDeductionVal && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+                    Note: Your itemized deduction of {format(itemizedAmount)} is lower than the {year} standard deduction ({format(standardDeductionVal)}). Under itemized filing, the calculation uses exactly your entered amount ({format(itemizedAmount)}).
+                  </p>
+                )}
+              </div>
             )}
           </div>
 
@@ -3201,6 +4214,18 @@ export function IncomeTaxModule({ currency }: { currency: any }) {
 
       {/* Right Column: Key Metrics & Paycheck Breakdown */}
       <div className="lg:col-span-7 space-y-8">
+        {taxResult.warnings && taxResult.warnings.length > 0 && (
+          <div className="p-4 bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-700 rounded-2xl space-y-1.5 text-xs text-amber-900 dark:text-amber-200">
+            <div className="font-bold uppercase tracking-wider flex items-center gap-1.5 text-amber-800 dark:text-amber-300">
+              <ShieldAlert size={14} className="shrink-0" />
+              <span>Assumptions &amp; Verification Notice</span>
+            </div>
+            {taxResult.warnings.map((w: string, idx: number) => (
+              <p key={idx} className="leading-relaxed">{w}</p>
+            ))}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <MetricCard 
             label="Net Annual Take-Home" 
@@ -3284,16 +4309,16 @@ export function IncomeTaxModule({ currency }: { currency: any }) {
                   {taxResult.monthlyStateTax > 0 ? `-${formatDetailed(taxResult.monthlyStateTax)}` : '$0.00'}
                 </span>
               </div>
-              {preTax401k > 0 && (
+              {capped401k > 0 && (
                 <div className="flex justify-between py-1.5 border-b border-slate-200 dark:border-slate-700">
                   <span className="text-slate-700 dark:text-slate-300 font-medium">Pre-Tax 401(k) Elective Deferral</span>
-                  <span className="font-bold text-cyan-600 dark:text-cyan-400 font-mono">-{formatDetailed(preTax401k / 12)}</span>
+                  <span className="font-bold text-cyan-600 dark:text-cyan-400 font-mono">-{formatDetailed(capped401k / 12)}</span>
                 </div>
               )}
-              {preTaxHsaFsa > 0 && (
+              {cappedHsaFsa > 0 && (
                 <div className="flex justify-between py-1.5 border-b border-slate-200 dark:border-slate-700">
                   <span className="text-slate-700 dark:text-slate-300 font-medium">Pre-Tax HSA/FSA (Sec. 125)</span>
-                  <span className="font-bold text-teal-600 dark:text-teal-400 font-mono">-{formatDetailed(preTaxHsaFsa / 12)}</span>
+                  <span className="font-bold text-teal-600 dark:text-teal-400 font-mono">-{formatDetailed(cappedHsaFsa / 12)}</span>
                 </div>
               )}
               <div className="flex justify-between py-2.5 border-t-2 border-slate-300 dark:border-slate-600">
@@ -3302,6 +4327,32 @@ export function IncomeTaxModule({ currency }: { currency: any }) {
               </div>
             </div>
           </GlassCard>
+        </div>
+
+        {/* Informational Guidance: Items Not Modeled & Special Rules */}
+        <div className="p-4 sm:p-6 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-3 text-xs sm:text-sm">
+          <div className="flex items-center gap-2 font-bold text-slate-900 dark:text-white text-sm">
+            <ShieldAlert size={16} className="text-amber-500" />
+            <span>Important Tax Provisions &amp; Unmodeled Items</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-slate-600 dark:text-slate-300">
+            <div>
+              <p className="font-bold text-slate-800 dark:text-slate-200">Additional Medicare Tax Withholding:</p>
+              <p>Employers are required by law to withhold the 0.9% Additional Medicare Tax on wages exceeding $200,000 in a calendar year, regardless of the employee's filing status. Actual annual liability depends on filing status threshold ($250k MFJ, $125k MFS, $200k Single/HOH) and is reconciled on Form 8959.</p>
+            </div>
+            <div>
+              <p className="font-bold text-slate-800 dark:text-slate-200">State Disability &amp; Paid Family Leave (SDI / PFL):</p>
+              <p>Mandatory employee payroll contributions for disability insurance and paid family leave (such as CA SDI 1.2%, WA PFML, MA PFML, NJ TDI/FLI, NY DBL/PFL) are state-specific payroll taxes not modeled here. Check your pay stub for local deductions.</p>
+            </div>
+            <div>
+              <p className="font-bold text-slate-800 dark:text-slate-200">OBBBA Deductions &amp; Special Provisions:</p>
+              <p>Special deductions under the One Big Beautiful Bill Act (OBBBA) — including deductions for tips, overtime compensation, seniors, and auto-loan interest — as well as Section 199A Qualified Business Income (QBI) deductions and the State &amp; Local Tax (SALT) cap, require individual return qualification and are not modeled in this wage calculator.</p>
+            </div>
+            <div>
+              <p className="font-bold text-slate-800 dark:text-slate-200">Federal Tax Credits &amp; Local Taxes:</p>
+              <p>Refundable and nonrefundable tax credits (such as the Child Tax Credit, Earned Income Tax Credit (EITC), Child Care Credit), and municipal/county local income taxes (e.g. NYC local tax, Philadelphia wage tax, Ohio municipal taxes) are not modeled in this paycheck engine.</p>
+            </div>
+          </div>
         </div>
 
         {/* Assumptions & Legal Sources Compliance Panel */}
@@ -3313,28 +4364,28 @@ export function IncomeTaxModule({ currency }: { currency: any }) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-slate-600 dark:text-slate-300">
             <div>
               <p className="font-bold text-slate-800 dark:text-slate-200">Federal Income Tax:</p>
-              <p>Internal Revenue Code § 1; IRS Revenue Procedure {year === 2024 ? '2023-34' : year === 2025 ? '2024-40' : '2024-40 (Projected)'}.</p>
-              <a href={taxResult.statutorySources.federal} target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-indigo-400 underline font-medium mt-0.5 inline-block">
-                View Official IRS Revenue Procedure
+              <p>Internal Revenue Code § 1; Official IRS Guidance: {taxResult.statutorySources.federal.split('/').pop()?.replace('.pdf', '').toUpperCase() || taxResult.statutorySources.federal}.</p>
+              <a href={taxResult.statutorySources.federal} target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-indigo-400 underline font-medium mt-0.5 inline-block break-all">
+                View Official IRS Document ({taxResult.statutorySources.federal})
               </a>
             </div>
             <div>
               <p className="font-bold text-slate-800 dark:text-slate-200">FICA &amp; Social Security:</p>
               <p>IRC § 3101(a) (6.2% OASDI up to ${new Intl.NumberFormat().format(taxResult.ficaDetails.ssCap)} wage base) &amp; IRC § 3101(b) (1.45% Medicare uncapped + 0.9% surtax).</p>
-              <a href={taxResult.statutorySources.socialSecurity} target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-indigo-400 underline font-medium mt-0.5 inline-block">
-                View SSA Social Security Fact Sheet
+              <a href={taxResult.statutorySources.socialSecurity} target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-indigo-400 underline font-medium mt-0.5 inline-block break-all">
+                View SSA Social Security Fact Sheet ({taxResult.statutorySources.socialSecurity})
               </a>
             </div>
             <div>
               <p className="font-bold text-slate-800 dark:text-slate-200">State Jurisdiction:</p>
               <p>{taxResult.stateName} Department of Revenue / Tax Commission. Effective date {stateCfg.effectiveDate}.</p>
-              <a href={taxResult.statutorySources.state} target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-indigo-400 underline font-medium mt-0.5 inline-block">
+              <a href={taxResult.statutorySources.state} target="_blank" rel="noopener noreferrer" className="text-indigo-600 dark:text-indigo-400 underline font-medium mt-0.5 inline-block break-all">
                 View State Department of Revenue Source
               </a>
             </div>
             <div>
               <p className="font-bold text-slate-800 dark:text-slate-200">Section 125 &amp; Pre-Tax Savings:</p>
-              <p>IRC § 125 (Cafeteria Plans), IRC § 402(g) ($23,000 for 2024 / $23,500 for 2025 elective deferrals).</p>
+              <p>IRC § 125 (Cafeteria Plans), IRC § 402(g) (${new Intl.NumberFormat().format(US_TAX_CONFIG_BY_YEAR[year]?.retirementLimits?.elective401kLimit?.value || 24500)} elective deferral limit per Notice 2025-67).</p>
             </div>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 pt-2 border-t border-slate-200 dark:border-slate-700 italic">
@@ -3434,90 +4485,513 @@ export function CompoundInterestModule({ currency }: { currency: any }) {
  * ========================================================================== */
 export function SalaryModule({ currency }: { currency: any }) {
   const [params, setParams] = useState({
-    amount: 45,
-    frequency: 'hourly' as 'hourly' | 'daily' | 'weekly' | 'biweekly' | 'semimonthly' | 'monthly' | 'annual',
+    amount: 75000,
+    frequency: 'annual' as 'hourly' | 'daily' | 'weekly' | 'biweekly' | 'semimonthly' | 'monthly' | 'annual',
     hoursPerWeek: 40,
     daysPerWeek: 5,
-    weeksPerYear: 52,
-    overtimeHours: 5,
-    taxRate: 20
+    paidWeeks: 52,
+    unpaidWeeks: 0,
+    isExempt: false,
+    overtimeHours: 0,
+
+    // Real Statutory Tax Engine Parameters
+    year: DEFAULT_TAX_YEAR,
+    filingStatus: 'single' as FilingStatus,
+    stateCode: 'CA',
+    preTax401k: 0,
+    preTaxHsaFsa: 0,
+
+    // Optional Flat Override (Rough estimate)
+    useFlatTaxOverride: false,
+    estimatedTaxPercent: 20, // Default 20% consistent between UI and engine
+
+    // California Daily Overtime
+    applyCaliforniaDailyOvertime: false,
+    dailyHours: [8, 8, 8, 8, 8, 0, 0] as number[]
   });
+
+  // Keep paid and unpaid weeks in sync with 52-week baseline
+  const handleUnpaidWeeksChange = (unpaid: number) => {
+    const safeUnpaid = Math.max(0, Math.min(52, unpaid));
+    setParams(prev => ({
+      ...prev,
+      unpaidWeeks: safeUnpaid,
+      paidWeeks: Math.max(1, 52 - safeUnpaid)
+    }));
+  };
+
+  const handlePaidWeeksChange = (paid: number) => {
+    const safePaid = Math.max(1, Math.min(52, paid));
+    setParams(prev => ({
+      ...prev,
+      paidWeeks: safePaid,
+      unpaidWeeks: Math.max(0, 52 - safePaid)
+    }));
+  };
+
+  const handleDailyHourChange = (index: number, val: number) => {
+    const updated = [...params.dailyHours];
+    updated[index] = Math.max(0, Math.min(24, val));
+    setParams(prev => ({ ...prev, dailyHours: updated }));
+  };
 
   const res = useMemo(() => calculateSalary({
     amount: params.amount,
     frequency: params.frequency,
     hoursPerWeek: params.hoursPerWeek,
     daysPerWeek: params.daysPerWeek,
-    weeksPerYear: params.weeksPerYear,
+    paidWeeks: params.paidWeeks,
+    unpaidWeeks: params.unpaidWeeks,
+    isExempt: params.isExempt,
     overtimeHours: params.overtimeHours,
-    estimatedTaxPercent: params.taxRate
+    year: params.year,
+    filingStatus: params.filingStatus,
+    stateCode: params.stateCode,
+    preTax401k: params.preTax401k,
+    preTaxHsaFsa: params.preTaxHsaFsa,
+    useFlatTaxOverride: params.useFlatTaxOverride,
+    estimatedTaxPercent: params.estimatedTaxPercent,
+    applyCaliforniaDailyOvertime: params.applyCaliforniaDailyOvertime && params.stateCode === 'CA',
+    dailyHours: params.dailyHours
   }), [params]);
 
   const format = (v: number) => `${currency.symbol}${new Intl.NumberFormat().format(Math.round(v))}`;
+  const formatCents = (v: number) => `${currency.symbol}${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const stateRule = US_STATE_OVERTIME_RULES[params.stateCode?.toUpperCase() || ''];
+  const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-      <div className="lg:col-span-4 space-y-6">
-        <GlassCard className="p-6 space-y-6">
+      {/* Left Column: Form Controls */}
+      <div className="lg:col-span-5 space-y-6">
+        <GlassCard className="p-5 sm:p-6 space-y-5">
           <h3 className="text-lg font-black flex items-center gap-2 text-slate-900 dark:text-white">
-            <Briefcase size={20} className="text-teal-600 dark:text-teal-400" aria-hidden="true" /> Wage Conversion
+            <Briefcase size={20} className="text-teal-600 dark:text-teal-400" aria-hidden="true" />
+            Wage & Compensation Inputs
           </h3>
-          <InputGroup label="Pay Rate" value={params.amount} prefix={currency.symbol} onChange={(v: number) => setParams({...params, amount: v})} />
+
+          <InputGroup 
+            label="Pay Rate" 
+            value={params.amount} 
+            prefix={currency.symbol} 
+            onChange={(v: number) => setParams({ ...params, amount: v })} 
+          />
+
           <div className="space-y-1.5">
-            <label htmlFor="salary-frequency-select" className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">Pay Frequency</label>
+            <label htmlFor="salary-frequency-select" className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">
+              Pay Frequency
+            </label>
             <select
               id="salary-frequency-select"
               value={params.frequency}
-              onChange={e => setParams({...params, frequency: e.target.value as any})}
+              onChange={e => setParams({ ...params, frequency: e.target.value as any })}
               className="w-full min-h-[44px] bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-2xl py-3 px-4 text-xs font-bold text-slate-900 dark:text-slate-100 outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
             >
               <option value="hourly">Hourly</option>
               <option value="daily">Daily</option>
               <option value="weekly">Weekly</option>
-              <option value="biweekly">Bi-Weekly</option>
-              <option value="monthly">Monthly</option>
+              <option value="biweekly">Bi-Weekly (26 pay periods / yr)</option>
+              <option value="semimonthly">Semi-Monthly (24 pay periods / yr)</option>
+              <option value="monthly">Monthly (12 pay periods / yr)</option>
               <option value="annual">Annual</option>
             </select>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <InputGroup label="Hours / Week" value={params.hoursPerWeek} onChange={(v: number) => setParams({...params, hoursPerWeek: v})} />
-            <InputGroup label="Overtime Hrs / Wk" value={params.overtimeHours} onChange={(v: number) => setParams({...params, overtimeHours: v})} />
+
+          {/* FLSA Exemption Status */}
+          <div className="space-y-2">
+            <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">
+              FLSA Overtime Classification
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setParams({ ...params, isExempt: false })}
+                className={cn(
+                  "min-h-[44px] p-2.5 rounded-xl border text-xs font-bold transition-all text-center",
+                  !params.isExempt
+                    ? "bg-teal-600 text-white border-teal-600 shadow-sm"
+                    : "bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
+                )}
+              >
+                Non-Exempt (1.5× OT)
+              </button>
+              <button
+                type="button"
+                onClick={() => setParams({ ...params, isExempt: true })}
+                className={cn(
+                  "min-h-[44px] p-2.5 rounded-xl border text-xs font-bold transition-all text-center",
+                  params.isExempt
+                    ? "bg-teal-600 text-white border-teal-600 shadow-sm"
+                    : "bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
+                )}
+              >
+                Exempt (Salaried)
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 ml-1">
+              {!params.isExempt 
+                ? "Non-exempt employees receive statutory 1.5× regular pay for workweek hours over 40 under FLSA." 
+                : "Exempt employees receive straight salary without statutory overtime requirements under FLSA § 13(a)(1)."}
+            </p>
           </div>
-          <InputGroup label="Est. Tax Deduction" value={params.taxRate} suffix="%" step="1" onChange={(v: number) => setParams({...params, taxRate: v})} />
+
+          <div className="grid grid-cols-2 gap-3 sm:gap-4">
+            <InputGroup 
+              label="Hours / Week" 
+              value={params.hoursPerWeek} 
+              onChange={(v: number) => setParams({ ...params, hoursPerWeek: v })} 
+            />
+            <InputGroup 
+              label="Extra Overtime Hrs" 
+              value={params.overtimeHours} 
+              onChange={(v: number) => setParams({ ...params, overtimeHours: v })} 
+            />
+          </div>
+
+          {/* Paid / Unpaid Weeks Annualization */}
+          <div className="grid grid-cols-2 gap-3 sm:gap-4">
+            <InputGroup 
+              label="Paid Weeks / Year" 
+              value={params.paidWeeks} 
+              onChange={handlePaidWeeksChange} 
+            />
+            <InputGroup 
+              label="Unpaid Leave Weeks" 
+              value={params.unpaidWeeks} 
+              onChange={handleUnpaidWeeksChange} 
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:gap-4">
+            <InputGroup 
+              label="Work Days / Week" 
+              value={params.daysPerWeek} 
+              min={1} 
+              onChange={(v: number) => setParams({ ...params, daysPerWeek: Math.max(1, v) })} 
+            />
+            <div className="space-y-1.5">
+              <label htmlFor="salary-tax-year-select" className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">
+                Tax Year
+              </label>
+              <select
+                id="salary-tax-year-select"
+                value={params.year}
+                onChange={e => setParams({ ...params, year: Number(e.target.value) })}
+                className="w-full min-h-[44px] bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-2xl py-3 px-4 text-xs font-bold text-slate-900 dark:text-slate-100 outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+              >
+                {SUPPORTED_TAX_YEARS.map(yr => (
+                  <option key={yr} value={yr}>{yr} IRS Tax Year</option>
+                ))}
+              </select>
+            </div>
+          </div>
         </GlassCard>
+
+        {/* Real Tax Engine Controls */}
+        <GlassCard className="p-5 sm:p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-black flex items-center gap-2 text-slate-900 dark:text-white">
+              <Percent size={20} className="text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
+              Tax Withholding Setup
+            </h3>
+            <span className={cn(
+              "text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full",
+              params.useFlatTaxOverride 
+                ? "bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200" 
+                : "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-200"
+            )}>
+              {params.useFlatTaxOverride ? "Flat Override" : "Statutory Engine"}
+            </span>
+          </div>
+
+          {/* Toggle for Flat Rate Override */}
+          <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 flex items-center justify-between">
+            <div>
+              <label htmlFor="salary-flat-override-toggle" className="text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer">
+                Override with flat % (Rough estimate)
+              </label>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Bypass federal, state, and FICA statutory brackets
+              </p>
+            </div>
+            <input
+              id="salary-flat-override-toggle"
+              type="checkbox"
+              checked={params.useFlatTaxOverride}
+              onChange={e => setParams({ ...params, useFlatTaxOverride: e.target.checked })}
+              className="h-5 w-5 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
+            />
+          </div>
+
+          {params.useFlatTaxOverride ? (
+            <div className="space-y-3">
+              <InputGroup 
+                label="Flat Estimated Tax Rate" 
+                value={params.estimatedTaxPercent} 
+                suffix="%" 
+                step="1" 
+                onChange={(v: number) => setParams({ ...params, estimatedTaxPercent: v })} 
+              />
+              <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 p-3 rounded-xl border border-amber-200 dark:border-amber-800">
+                Rough estimate mode: uses a flat {params.estimatedTaxPercent}% deduction. Uncheck the override above to calculate statutory Federal, FICA, and State taxes.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                <div className="space-y-1.5">
+                  <label htmlFor="salary-filing-status-select" className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">
+                    Filing Status
+                  </label>
+                  <select
+                    id="salary-filing-status-select"
+                    value={params.filingStatus}
+                    onChange={e => setParams({ ...params, filingStatus: e.target.value as FilingStatus })}
+                    className="w-full min-h-[44px] bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-2xl py-3 px-3 text-xs font-bold text-slate-900 dark:text-slate-100 outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                  >
+                    <option value="single">Single</option>
+                    <option value="married_joint">Married Filing Jointly</option>
+                    <option value="married_separate">Married Filing Separately</option>
+                    <option value="head_of_household">Head of Household</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label htmlFor="salary-state-select" className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">
+                    State of Residence
+                  </label>
+                  <select
+                    id="salary-state-select"
+                    value={params.stateCode}
+                    onChange={e => setParams({ ...params, stateCode: e.target.value })}
+                    className="w-full min-h-[44px] bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-2xl py-3 px-3 text-xs font-bold text-slate-900 dark:text-slate-100 outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                  >
+                    {US_STATE_LIST.map(st => (
+                      <option key={st.code} value={st.code}>{st.code} - {st.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                <InputGroup 
+                  label="Pre-Tax 401(k) / IRA" 
+                  value={params.preTax401k} 
+                  prefix={currency.symbol} 
+                  onChange={(v: number) => setParams({ ...params, preTax401k: v })} 
+                />
+                <InputGroup 
+                  label="Pre-Tax HSA / FSA" 
+                  value={params.preTaxHsaFsa} 
+                  prefix={currency.symbol} 
+                  onChange={(v: number) => setParams({ ...params, preTaxHsaFsa: v })} 
+                />
+              </div>
+            </div>
+          )}
+        </GlassCard>
+
+        {/* State Daily Overtime Rule Banner */}
+        {stateRule && (
+          <div className="p-4 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-2xl space-y-2 text-xs">
+            <div className="flex items-center gap-2 font-bold text-blue-900 dark:text-blue-200">
+              <Info size={16} className="text-blue-600 dark:text-blue-400 shrink-0" aria-hidden="true" />
+              <span>{params.stateCode.toUpperCase()} Statutory Overtime Law ({stateRule.statute})</span>
+            </div>
+            <p className="text-blue-800 dark:text-blue-300 leading-relaxed font-medium">
+              {stateRule.ruleSummary}
+            </p>
+            <p className="text-[11px] text-blue-600 dark:text-blue-400">
+              Source: {stateRule.source}
+            </p>
+          </div>
+        )}
+
+        {/* California Daily Overtime Interactive Section */}
+        {params.stateCode?.toUpperCase() === 'CA' && !params.isExempt && (
+          <GlassCard className="p-5 sm:p-6 space-y-4 border-teal-200 dark:border-teal-900">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-xs font-bold uppercase tracking-wider text-teal-800 dark:text-teal-300">
+                  California Daily Overtime Model
+                </h4>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Cal. Lab. Code § 510: 1.5× over 8h/day, 2.0× over 12h/day, 7th-day rules
+                </p>
+              </div>
+              <input
+                id="california-daily-ot-toggle"
+                type="checkbox"
+                checked={params.applyCaliforniaDailyOvertime}
+                onChange={e => setParams({ ...params, applyCaliforniaDailyOvertime: e.target.checked })}
+                className="h-5 w-5 text-teal-600 rounded border-slate-300 focus:ring-teal-500 cursor-pointer"
+              />
+            </div>
+
+            {params.applyCaliforniaDailyOvertime && (
+              <div className="space-y-3 pt-2">
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
+                  Daily Work Hours (Mon – Sun):
+                </span>
+                <div className="grid grid-cols-7 gap-1 sm:gap-2">
+                  {params.dailyHours.map((h, i) => (
+                    <div key={dayNames[i]} className="text-center space-y-1">
+                      <span className="text-[10px] font-bold text-slate-600 dark:text-slate-400 block">
+                        {dayNames[i]}
+                      </span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="24"
+                        value={h}
+                        onChange={e => handleDailyHourChange(i, Number(e.target.value))}
+                        className="w-full text-center py-2 px-1 text-xs font-bold bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg outline-none focus:ring-2 focus:ring-teal-500"
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-3 gap-2 p-3 bg-teal-50 dark:bg-teal-950/40 rounded-xl text-center text-xs">
+                  <div>
+                    <div className="text-[10px] text-teal-700 dark:text-teal-300 font-bold uppercase">Regular (1.0×)</div>
+                    <div className="font-mono font-bold text-teal-900 dark:text-teal-100">{res.regularHours}h</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-teal-700 dark:text-teal-300 font-bold uppercase">Daily OT (1.5×)</div>
+                    <div className="font-mono font-bold text-teal-900 dark:text-teal-100">{res.overtimeHours}h</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-teal-700 dark:text-teal-300 font-bold uppercase">Double Time (2.0×)</div>
+                    <div className="font-mono font-bold text-teal-900 dark:text-teal-100">{res.doubleTimeHours}h</div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </GlassCard>
+        )}
       </div>
 
-      <div className="lg:col-span-8 space-y-8">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <MetricCard label="Gross Annual Salary" value={format(res.annualGross)} subtext="Before tax deductions" icon={Briefcase} color="bg-teal-600" />
-          <MetricCard label="Net Annual Take-Home" value={format(res.annualNet)} subtext="After estimated withholding" icon={Wallet} color="bg-emerald-600" />
-          <MetricCard label="Base Hourly Equivalent" value={format(res.baseHourly)} subtext="Standard 40-hr rate" icon={Zap} color="bg-blue-600" />
+      {/* Right Column: Results & Matrix */}
+      <div className="lg:col-span-7 space-y-6">
+        {/* Metric Cards - Hourly and Daily show exact cents */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
+          <MetricCard 
+            label="Gross Annual Salary" 
+            value={format(res.annualGross)} 
+            subtext={`Gross earnings (${res.paidWeeks} paid wks)`} 
+            icon={Briefcase} 
+            color="bg-teal-600" 
+          />
+          <MetricCard 
+            label="Net Annual Take-Home" 
+            value={format(res.annualNet)} 
+            subtext={`${res.effectiveTaxRate.toFixed(1)}% total effective deduction`} 
+            icon={Wallet} 
+            color="bg-emerald-600" 
+          />
+          <MetricCard 
+            label="Base Hourly Rate" 
+            value={`${formatCents(res.baseHourly)} / hr`} 
+            subtext={res.isExempt ? "Exempt straight pay" : `1.5× Overtime: ${formatCents(res.overtimeHourly)} / hr`} 
+            icon={Zap} 
+            color="bg-blue-600" 
+          />
+          <MetricCard 
+            label="Daily Rate Equivalent" 
+            value={`${formatCents(res.weeklyGross / params.daysPerWeek)} / day`} 
+            subtext={`${params.daysPerWeek} work days / week`} 
+            icon={Calendar} 
+            color="bg-purple-600" 
+          />
         </div>
 
+        {/* FLSA 40-hour rule alert banner */}
+        {!params.isExempt && params.hoursPerWeek > 40 && (
+          <div className="p-4 bg-teal-50 dark:bg-teal-950/40 border border-teal-200 dark:border-teal-800 rounded-2xl flex items-center gap-3 text-xs text-teal-900 dark:text-teal-200">
+            <CheckCircle2 size={18} className="text-teal-600 dark:text-teal-400 shrink-0" aria-hidden="true" />
+            <span>
+              <strong>FLSA Overtime Applied:</strong> First 40 hours paid at regular rate ({formatCents(res.baseHourly)}/hr = {format(res.baseHourly * 40)}). The {params.hoursPerWeek - 40} hours above 40 are automatically paid at 1.5× ({formatCents(res.overtimeHourly)}/hr = {format((params.hoursPerWeek - 40) * res.overtimeHourly)}), yielding <strong>{format(res.weeklyGross)}</strong> weekly gross.
+            </span>
+          </div>
+        )}
+
+        {/* Tax Deductions Summary Card */}
+        <div className="bg-white dark:bg-[#1e293b] border border-slate-200 dark:border-slate-700 rounded-2xl p-5 sm:p-6 space-y-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+              Tax Withholding Breakdown ({res.taxMethod === 'statutory' ? `${params.year} IRS & State Statutory Brackets` : 'Flat Estimate'})
+            </h4>
+            <span className="text-xs font-bold font-mono px-2 py-0.5 rounded-md bg-rose-100 dark:bg-rose-900/50 text-rose-700 dark:text-rose-300">
+              -{format(res.totalTax)} Total Tax ({res.effectiveTaxRate.toFixed(1)}%)
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl">
+              <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Federal Tax</span>
+              <span className="text-sm font-black text-rose-600 dark:text-rose-400">-{format(res.federalTax)}</span>
+            </div>
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl">
+              <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">FICA (SS & Med)</span>
+              <span className="text-sm font-black text-rose-600 dark:text-rose-400">-{format(res.ficaTax)}</span>
+            </div>
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl">
+              <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">State Tax ({params.stateCode})</span>
+              <span className="text-sm font-black text-rose-600 dark:text-rose-400">-{format(res.stateTax)}</span>
+            </div>
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl">
+              <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Pre-Tax Deductions</span>
+              <span className="text-sm font-black text-blue-600 dark:text-blue-400">-{format(res.totalPreTax)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Salary Conversion Matrix Table - Hourly and Daily show exact cents */}
         <div className="bg-white dark:bg-[#1e293b] border border-slate-200 dark:border-slate-700 rounded-2xl overflow-hidden shadow-sm transition-colors">
           <div className="p-4 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center">
-            <span className="text-xs font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">Salary Conversion Matrix</span>
+            <span className="text-xs font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+              Salary Conversion Matrix
+            </span>
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+              Exact cents preserved for hourly & daily rates
+            </span>
           </div>
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-100 dark:bg-slate-800 text-xs uppercase font-bold text-slate-700 dark:text-slate-300">
-              <tr>
-                <th className="p-4">Pay Period</th>
-                <th className="p-4">Gross Earnings</th>
-                <th className="p-4">Est. Tax</th>
-                <th className="p-4">Net Take-Home</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-700 font-medium">
-              {res.breakdown.map((row: any) => (
-                <tr key={row.period} className="hover:bg-slate-100/50 dark:hover:bg-slate-700/50 transition-colors">
-                  <td className="p-4 font-bold text-slate-800 dark:text-slate-200">{row.period}</td>
-                  <td className="p-4 text-slate-900 dark:text-white font-bold">{format(row.gross)}</td>
-                  <td className="p-4 text-rose-600 dark:text-rose-400 font-bold">-{format(row.tax)}</td>
-                  <td className="p-4 text-emerald-700 dark:text-emerald-400 font-black">{format(row.net)}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-100 dark:bg-slate-800 text-xs uppercase font-bold text-slate-700 dark:text-slate-300">
+                <tr>
+                  <th className="p-3.5 sm:p-4">Pay Period</th>
+                  <th className="p-3.5 sm:p-4">Gross Earnings</th>
+                  <th className="p-3.5 sm:p-4">Est. Tax Withholding</th>
+                  <th className="p-3.5 sm:p-4">Net Take-Home</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-700 font-medium">
+                {res.breakdown.map((row: any) => {
+                  const showCents = row.period === 'Hourly' || row.period === 'Daily';
+                  const displayGross = showCents ? formatCents(row.gross) : format(row.gross);
+                  const displayTax = showCents ? formatCents(row.tax) : format(row.tax);
+                  const displayNet = showCents ? formatCents(row.net) : format(row.net);
+
+                  return (
+                    <tr key={row.period} className="hover:bg-slate-100/50 dark:hover:bg-slate-700/50 transition-colors">
+                      <td className="p-3.5 sm:p-4 font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                        {row.period}
+                        {showCents && (
+                          <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                            .¢¢
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3.5 sm:p-4 text-slate-900 dark:text-white font-bold">{displayGross}</td>
+                      <td className="p-3.5 sm:p-4 text-rose-600 dark:text-rose-400 font-bold">-{displayTax}</td>
+                      <td className="p-3.5 sm:p-4 text-emerald-700 dark:text-emerald-400 font-black">{displayNet}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -3583,11 +5057,14 @@ export function SalesTaxModule({ currency }: { currency: any }) {
     mode: 'add_tax' as 'add_tax' | 'extract_tax',
     stateRate: 6.25,
     localRate: 1.5,
-    discountPercent: 10
+    discountPercent: 10,
+    discountType: 'store' as 'store' | 'manufacturer',
+    itemType: 'general' as 'general' | 'groceries' | 'clothing' | 'prescription' | 'restaurant',
+    stateCode: 'CA'
   });
 
   const res = useMemo(() => calculateSalesTax(params), [params]);
-  const format = (v: number) => `${currency.symbol}${new Intl.NumberFormat().format(Math.round(v))}`;
+  const format = (v: number) => `${currency.symbol}${v.toFixed(2)}`;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -3611,7 +5088,7 @@ export function SalesTaxModule({ currency }: { currency: any }) {
                 onClick={() => setParams({...params, mode: 'extract_tax'})}
                 className={cn("min-h-[44px] py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500", params.mode === 'extract_tax' ? "bg-white dark:bg-slate-700 text-pink-600 dark:text-pink-400 shadow-sm" : "text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white")}
               >
-                Reverse Tax Extraction
+                Reverse Extraction
               </button>
             </div>
           </div>
@@ -3623,49 +5100,112 @@ export function SalesTaxModule({ currency }: { currency: any }) {
             onChange={(v: number) => setParams({...params, amount: v})} 
           />
 
+          <div className="space-y-1.5">
+            <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">State Jurisdiction</label>
+            <select
+              value={params.stateCode}
+              onChange={e => setParams({...params, stateCode: e.target.value})}
+              className="w-full min-h-[44px] px-3 py-2.5 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-pink-500"
+            >
+              {['CA', 'TX', 'NY', 'FL', 'IL', 'PA', 'OH', 'GA', 'NC', 'MI', 'NJ', 'VA', 'WA', 'AZ', 'MA', 'TN', 'IN', 'MO', 'MD', 'WI', 'CO', 'MN', 'SC', 'AL', 'LA', 'KY', 'OR', 'OK', 'CT', 'UT', 'IA', 'NV', 'AR', 'MS', 'KS', 'NM', 'NE', 'WV', 'ID', 'HI', 'NH', 'ME', 'RI', 'MT', 'DE', 'SD', 'ND', 'AK', 'VT', 'WY', 'DC'].map(code => (
+                <option key={code} value={code}>{code}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">Taxable Item Type</label>
+            <select
+              value={params.itemType}
+              onChange={e => setParams({...params, itemType: e.target.value as any})}
+              className="w-full min-h-[44px] px-3 py-2.5 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-pink-500"
+            >
+              <option value="general">General Merchandise</option>
+              <option value="groceries">Groceries (Unprepared Food)</option>
+              <option value="clothing">Clothing & Footwear</option>
+              <option value="prescription">Prescription Drugs</option>
+              <option value="restaurant">Restaurant / Prepared Meals</option>
+            </select>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <InputGroup label="State Tax" value={params.stateRate} suffix="%" step="0.1" onChange={(v: number) => setParams({...params, stateRate: v})} />
-            <InputGroup label="City / Local Tax" value={params.localRate} suffix="%" step="0.1" onChange={(v: number) => setParams({...params, localRate: v})} />
+            <InputGroup label="Local Tax" value={params.localRate} suffix="%" step="0.1" onChange={(v: number) => setParams({...params, localRate: v})} />
           </div>
 
           {params.mode === 'add_tax' && (
-            <InputGroup label="Discount %" value={params.discountPercent} suffix="%" step="1" onChange={(v: number) => setParams({...params, discountPercent: v})} />
+            <div className="space-y-4 pt-2 border-t border-slate-200 dark:border-slate-700">
+              <InputGroup label="Discount %" value={params.discountPercent} suffix="%" step="1" onChange={(v: number) => setParams({...params, discountPercent: v})} />
+              <div className="space-y-1.5">
+                <span className="block text-xs font-bold text-slate-800 dark:text-slate-200 ml-1">Discount Type</span>
+                <div className="grid grid-cols-2 gap-2 p-1.5 bg-slate-100 dark:bg-slate-800 rounded-2xl">
+                  <button 
+                    type="button" 
+                    onClick={() => setParams({...params, discountType: 'store'})}
+                    className={cn("min-h-[40px] px-2 rounded-xl text-[11px] font-bold uppercase transition-all", params.discountType === 'store' ? "bg-white dark:bg-slate-700 text-pink-600 dark:text-pink-400 shadow-sm" : "text-slate-700 dark:text-slate-300")}
+                  >
+                    Store Discount (Reduces Tax)
+                  </button>
+                  <button 
+                    type="button" 
+                    onClick={() => setParams({...params, discountType: 'manufacturer'})}
+                    className={cn("min-h-[40px] px-2 rounded-xl text-[11px] font-bold uppercase transition-all", params.discountType === 'manufacturer' ? "bg-white dark:bg-slate-700 text-pink-600 dark:text-pink-400 shadow-sm" : "text-slate-700 dark:text-slate-300")}
+                  >
+                    Mfr. Coupon (Taxed Pre-Coupon)
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </GlassCard>
       </div>
 
       <div className="lg:col-span-8 space-y-8">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <MetricCard label="Final Out-of-Pocket" value={format(res.finalTotal)} subtext="Total receipt cost" icon={Wallet} color="bg-pink-600" />
-          <MetricCard label="Total Sales Tax" value={format(res.totalTax)} subtext={`${(params.stateRate + params.localRate).toFixed(2)}% combined rate`} icon={DollarSign} color="bg-slate-800 dark:bg-slate-700" />
-          <MetricCard label="Pre-Tax Base Amount" value={format(res.beforeTax)} subtext="Taxable merchandise" icon={ShieldAlert} color="bg-blue-600" />
+          <MetricCard label="Final Out-of-Pocket" value={format(res.finalTotal)} subtext="Total receipt cost (with cents)" icon={Wallet} color="bg-pink-600" />
+          <MetricCard label="Total Sales Tax" value={format(res.totalTax)} subtext={`State ($${res.stateTax.toFixed(2)}) + Local ($${res.localTax.toFixed(2)})`} icon={DollarSign} color="bg-slate-800 dark:bg-slate-700" />
+          <MetricCard label="Pre-Tax Base Amount" value={format(res.beforeTax)} subtext="Taxable merchandise base" icon={ShieldAlert} color="bg-blue-600" />
         </div>
 
         <GlassCard className="p-6 lg:p-8 space-y-4">
-          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Receipt Line Item Breakdown</h4>
+          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Receipt Line Item Breakdown (Jurisdictional Computation)</h4>
           <div className="space-y-3 text-sm pt-2">
             <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
-              <span className="text-slate-700 dark:text-slate-300 font-medium">Item Pre-Tax Price</span>
+              <span className="text-slate-700 dark:text-slate-300 font-medium">Item Base Price</span>
               <span className="font-bold text-slate-900 dark:text-white">{format(res.beforeTax)}</span>
             </div>
             {params.mode === 'add_tax' && res.savings > 0 && (
               <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
-                <span className="text-emerald-700 dark:text-emerald-400 font-medium">Discount Savings Applied</span>
+                <span className="text-emerald-700 dark:text-emerald-400 font-medium">
+                  {params.discountType === 'store' ? 'Store Discount Savings' : 'Manufacturer Coupon (Reimbursed)'}
+                </span>
                 <span className="font-bold text-emerald-700 dark:text-emerald-400">-{format(res.savings)}</span>
               </div>
             )}
             <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
-              <span className="text-slate-700 dark:text-slate-300 font-medium">State Tax ({params.stateRate}%)</span>
+              <span className="text-slate-700 dark:text-slate-300 font-medium">State Tax ({params.stateRate}%) - Rounded per jurisdiction</span>
               <span className="font-bold text-slate-900 dark:text-white">+{format(res.stateTax)}</span>
             </div>
             <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
-              <span className="text-slate-700 dark:text-slate-300 font-medium">Local / City Tax ({params.localRate}%)</span>
+              <span className="text-slate-700 dark:text-slate-300 font-medium">Local / City Tax ({params.localRate}%) - Rounded per jurisdiction</span>
               <span className="font-bold text-slate-900 dark:text-white">+{format(res.localTax)}</span>
             </div>
+            {res.centAdjustment !== 0 && (
+              <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700 text-xs">
+                <span className="text-amber-600 dark:text-amber-400 font-medium">Reverse Extraction Cent True-Up Adjustment</span>
+                <span className="font-bold text-amber-600 dark:text-amber-400">{res.centAdjustment > 0 ? `+$${res.centAdjustment.toFixed(2)}` : `-$${Math.abs(res.centAdjustment).toFixed(2)}`}</span>
+              </div>
+            )}
             <div className="flex justify-between py-3 border-t border-slate-200 dark:border-slate-700">
-              <span className="font-black text-slate-900 dark:text-white text-base">Total Due</span>
+              <span className="font-black text-slate-900 dark:text-white text-base">Total Due (Exact Cent Sum)</span>
               <span className="font-black text-pink-600 dark:text-pink-400 text-xl">{format(res.finalTotal)}</span>
             </div>
+          </div>
+
+          <div className="p-4 bg-slate-50 dark:bg-slate-800/80 rounded-2xl text-xs space-y-1.5 text-slate-600 dark:text-slate-300 border border-slate-200/60 dark:border-slate-700/60">
+            <p className="font-bold text-slate-900 dark:text-white">Tax Authority & Exemption Note:</p>
+            <p>{res.exemptionNote}</p>
+            <p className="text-[11px] opacity-80">Sales tax is computed independently per tax jurisdiction (state tax and local tax are rounded separately to the nearest cent, then summed to ensure totalTax = stateTax + localTax).</p>
           </div>
         </GlassCard>
       </div>

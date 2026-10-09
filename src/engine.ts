@@ -9,7 +9,7 @@
  * - SSA Social Security OASDI Wage Caps (12 CFR § 404.1047)
  * - TILA Regulation Z (12 CFR Part 1026, Appendix J - Actuarial APR)
  * - Homeowners Protection Act of 1998 (12 U.S.C. § 4901 - PMI 80%/78% LTV)
- * - RESPA Regulation X (12 CFR § 1024.17 - Escrow)
+ * - Real Estate Escrow Principles (Property tax and hazard insurance allocation)
  * - TISA Regulation DD (12 CFR Part 1030 - APY)
  * - SECURE 2.0 Act & ERISA Retirement Limits
  */
@@ -18,10 +18,16 @@ import {
   US_TAX_CONFIG_BY_YEAR,
   US_LENDING_CONFIG,
   US_STATE_TAX_CONFIGS,
+  US_MORTGAGE_CONFIG_2026,
+  US_AUTO_SALES_TAX_LIST,
+  US_STATE_OVERTIME_RULES,
   getStateConfig,
+  SUPPORTED_TAX_YEARS,
+  DEFAULT_TAX_YEAR,
   type FilingStatus,
   type StateTaxConfig,
-  type YearTaxConfig
+  type YearTaxConfig,
+  type AutoStateTaxConfig
 } from './usFinancialConfig';
 
 export * from './usFinancialConfig';
@@ -34,7 +40,20 @@ export interface MortgageInput {
   startDate?: string;
   autoPmi?: boolean;
   
-  // Annual Costs
+  // Loan Program & Insurance
+  loanProgram?: 'conventional' | 'fha' | 'va' | 'usda';
+  requestPmiCancellation80?: boolean;
+  vaIsSubsequentUse?: boolean;
+  vaIsExempt?: boolean; // Service-connected disability exemption
+  upfrontFeeFinanced?: boolean; // Upfront MIP / VA funding fee / USDA guarantee fee financed into loan
+
+  // Prepaid Finance Charges & APR
+  pointsPercent?: number; // Discount points as % of loan (1 point = 1%)
+  originationFee?: number; // Lender origination fee $
+  otherPrepaidFinanceCharges?: number; // Processing, underwriting, prepaid interest etc.
+
+  // Annual Costs & Valuation
+  assessedValue?: number; // Optional assessed property value for taxes
   taxPercent?: number; 
   insuranceAnnual?: number;
   pmiAnnual?: number;
@@ -50,13 +69,14 @@ export interface MortgageInput {
   // Extra Payments
   extraMonthly?: number;
   extraYearly?: number;
+  extraYearlyMonth?: number; // User selected month for yearly extra (1-12, default 1)
   extraOneTime?: number;
   extraOneTimeMonth?: number;
 }
 
 export class CalculationError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string = code) {
     super(message);
     this.name = "CalculationError";
     this.code = code;
@@ -122,6 +142,51 @@ export function solveRegulationZ_Apr(
   return roundToCents(i * 12 * 100);
 }
 
+/**
+ * Solves for the actuarial Annual Percentage Rate (APR) under Regulation Z
+ * for an irregular series of monthly payments (including varying monthly mortgage insurance).
+ * Solves: Amount Financed = Sum_{k=1..N} [ Payment_k / (1 + i)^k ]
+ * where i = periodic monthly rate, APR = i * 12 * 100.
+ */
+export function solveRegulationZ_AprSeries(
+  amountFinanced: number,
+  payments: number[]
+): number {
+  if (amountFinanced <= 0 || payments.length === 0) return 0;
+  const totalPaid = payments.reduce((sum, p) => sum + p, 0);
+  if (totalPaid <= amountFinanced) return 0;
+
+  const n = payments.length;
+  // Initial guess based on simple interest approximation
+  let i = (totalPaid - amountFinanced) / (amountFinanced * (n / 2));
+  if (i <= 0 || isNaN(i)) i = 0.005;
+
+  for (let iter = 0; iter < 120; iter++) {
+    let f = -amountFinanced;
+    let df = 0;
+
+    for (let k = 1; k <= n; k++) {
+      const pmt_k = payments[k - 1];
+      if (pmt_k <= 0) continue;
+      const discount = Math.pow(1 + i, -k);
+      f += pmt_k * discount;
+      df -= (k * pmt_k * discount) / (1 + i);
+    }
+
+    if (Math.abs(f) < 1e-7) break;
+    if (Math.abs(df) < 1e-12) break;
+
+    const nextI = i - f / df;
+    if (nextI <= 0) {
+      i = i / 2;
+    } else {
+      i = nextI;
+    }
+  }
+
+  return roundToCents(i * 12 * 100);
+}
+
 /* ============================================================================
  * CORE FINANCIAL UTILS & REGULATION DD (APY)
  * ========================================================================== */
@@ -170,9 +235,12 @@ export function calculateFicaTax(
   grossSalary: number, 
   preTaxHsaFsa: number = 0,
   filingStatus: FilingStatus = 'single',
-  year: number = 2024
+  year: number = DEFAULT_TAX_YEAR
 ) {
-  const yearConfig = US_TAX_CONFIG_BY_YEAR[year] || US_TAX_CONFIG_BY_YEAR[2024];
+  const yearConfig = US_TAX_CONFIG_BY_YEAR[year];
+  if (!yearConfig) {
+    throw new CalculationError('UNSUPPORTED_YEAR', `Unsupported tax year: ${year}. Supported tax years are: ${SUPPORTED_TAX_YEARS.join(', ')}.`);
+  }
 
   // Pre-Tax deduction exclusions:
   // Section 125 cafeteria plans (HSA / Health FSA) are exempt from FICA under IRC § 3121(a)(5)(G).
@@ -223,14 +291,29 @@ export interface ComprehensiveTaxInput {
   preTax401k?: number;
   preTaxHsaFsa?: number;
   itemizedDeductions?: number;
+  deductionMode?: 'standard' | 'itemized';
 }
 
 export function calculateComprehensiveTax(input: ComprehensiveTaxInput) {
-  const year = input.year && US_TAX_CONFIG_BY_YEAR[input.year] ? input.year : 2024;
+  if (input.year !== undefined && !US_TAX_CONFIG_BY_YEAR[input.year]) {
+    throw new CalculationError('UNSUPPORTED_YEAR', `Unsupported tax year: ${input.year}. Supported tax years are: ${SUPPORTED_TAX_YEARS.join(', ')}.`);
+  }
+  const year = input.year ?? DEFAULT_TAX_YEAR;
   const yearConfig = US_TAX_CONFIG_BY_YEAR[year];
+  if (!yearConfig) {
+    throw new CalculationError('UNSUPPORTED_YEAR', `Unsupported tax year: ${year}. Supported tax years are: ${SUPPORTED_TAX_YEARS.join(', ')}.`);
+  }
   const filingStatus = input.filingStatus || 'single';
   const stateCode = (input.stateCode || 'CA').toUpperCase();
-  const stateConfig = getStateConfig(stateCode);
+  const stateConfig = getStateConfig(stateCode, year);
+
+  const warnings: string[] = [];
+  if (stateConfig.warning) {
+    warnings.push(stateConfig.warning);
+  }
+  if (year === 2026 && yearConfig.standardDeduction.single.needsVerification) {
+    warnings.push('Tax Year 2026 values are projections derived from statutory inflation adjustment formulas and require verification upon release of final IRS Revenue Procedure.');
+  }
 
   const grossSalary = Math.max(0, input.annualIncome);
   const preTax401k = Math.max(0, input.preTax401k || 0);
@@ -239,7 +322,12 @@ export function calculateComprehensiveTax(input: ComprehensiveTaxInput) {
 
   // 1. Federal Standard vs Itemized Deduction
   const standardDeduction = yearConfig.standardDeduction[filingStatus].value;
-  const effectiveFederalDeduction = Math.max(standardDeduction, input.itemizedDeductions || 0);
+  // If deductionMode === 'itemized', use exactly itemizedDeductions (even if below standard)
+  const effectiveFederalDeduction = input.deductionMode === 'itemized'
+    ? Math.max(0, input.itemizedDeductions || 0)
+    : (input.itemizedDeductions !== undefined && input.itemizedDeductions > standardDeduction
+        ? input.itemizedDeductions
+        : standardDeduction);
 
   // Federal Taxable Income = Gross - Pre-Tax Contributions - Federal Deduction
   const federalTaxableIncome = Math.max(0, grossSalary - totalPreTax - effectiveFederalDeduction);
@@ -334,6 +422,8 @@ export function calculateComprehensiveTax(input: ComprehensiveTaxInput) {
     monthlyNetTakeHome: roundToCents(netTakeHome / 12),
     biweeklyNetTakeHome: roundToCents(netTakeHome / 26),
     weeklyNetTakeHome: roundToCents(netTakeHome / 52),
+    warnings,
+    isEstimated: Boolean(stateConfig.isEstimated || yearConfig.standardDeduction.single.needsVerification),
     statutorySources: {
       federal: yearConfig.sourceUrl,
       state: stateConfig.sourceUrl,
@@ -343,7 +433,10 @@ export function calculateComprehensiveTax(input: ComprehensiveTaxInput) {
   };
 }
 
-export function calculateIncomeTax(annualIncome: number, year: number = 2024, filingStatus: FilingStatus = 'single') {
+export function calculateIncomeTax(annualIncome: number, year: number = DEFAULT_TAX_YEAR, filingStatus: FilingStatus = 'single') {
+  if (!US_TAX_CONFIG_BY_YEAR[year]) {
+    throw new CalculationError('UNSUPPORTED_YEAR', `Unsupported tax year: ${year}. Supported tax years are: ${SUPPORTED_TAX_YEARS.join(', ')}.`);
+  }
   const res = calculateComprehensiveTax({
     annualIncome,
     year,
@@ -356,7 +449,9 @@ export function calculateIncomeTax(annualIncome: number, year: number = 2024, fi
   return {
     totalTax: res.federalTax,
     effectiveRate: res.federalEffectiveRate,
-    takeHome: roundToCents(annualIncome - res.federalTax)
+    takeHome: roundToCents(annualIncome - res.federalTax),
+    warnings: res.warnings,
+    isEstimated: res.isEstimated
   };
 }
 
@@ -382,29 +477,39 @@ export function calculateInflation(amount: number, rate: number, years: number) 
 export function calculateLoan(input: {
   loanAmount: number;
   annualRate: number;
-  termYears: number;
+  termMonths?: number;
+  termYears?: number;
   originationFeePercent?: number;
+  originationFeeFlat?: number;
+  feeDeductedFromProceeds?: boolean;
   extraMonthly?: number;
 }) {
-  const principal = Math.max(0, input.loanAmount);
+  const loanAmount = Math.max(0, input.loanAmount);
   const rate = Math.max(0, input.annualRate) / 100 / 12;
-  const n = Math.max(1, input.termYears) * 12;
+  const n = input.termMonths !== undefined ? Math.max(1, Math.round(input.termMonths)) : Math.max(1, Math.round((input.termYears || 1) * 12));
   const extra = Math.max(0, input.extraMonthly || 0);
-  const fee = roundToCents(principal * ((input.originationFeePercent || 0) / 100));
+
+  const feePercent = input.originationFeePercent || 0;
+  const feeFlat = input.originationFeeFlat || 0;
+  const fee = roundToCents((loanAmount * (feePercent / 100)) + feeFlat);
+
+  const deducted = input.feeDeductedFromProceeds !== undefined ? input.feeDeductedFromProceeds : true;
+
+  const amortizationPrincipal = deducted ? loanAmount : roundToCents(loanAmount + fee);
+  const amountFinanced = deducted ? roundToCents(loanAmount - fee) : loanAmount;
 
   let monthlyPI = 0;
-  if (principal > 0) {
+  if (amortizationPrincipal > 0) {
     if (rate === 0) {
-      monthlyPI = roundToCents(principal / n);
+      monthlyPI = roundToCents(amortizationPrincipal / n);
     } else {
       const g = Math.pow(1 + rate, n);
-      monthlyPI = roundToCents((principal * rate * g) / (g - 1));
+      monthlyPI = roundToCents((amortizationPrincipal * rate * g) / (g - 1));
     }
   }
 
-  let balance = principal;
+  let balance = amortizationPrincipal;
   let totalInterest = 0;
-  let totalPaid = 0;
   let payoffMonth = 0;
   const schedule: any[] = [];
 
@@ -414,7 +519,7 @@ export function calculateLoan(input: {
     let principalPaid = roundToCents(monthlyPI - interest);
     let appliedExtra = extra;
 
-    if (principalPaid + appliedExtra >= balance || m === n) {
+    if (m === n || principalPaid + appliedExtra >= balance) {
       principalPaid = balance;
       appliedExtra = 0;
       balance = 0;
@@ -424,51 +529,122 @@ export function calculateLoan(input: {
     }
 
     totalInterest = roundToCents(totalInterest + interest);
-    totalPaid = roundToCents(totalPaid + principalPaid + interest + appliedExtra);
-    if (balance <= 0 && payoffMonth === 0) payoffMonth = m;
+    const payment = roundToCents(principalPaid + interest + appliedExtra);
 
     schedule.push({
       month: m,
       year: Math.ceil(m / 12),
-      payment: roundToCents(principalPaid + interest + appliedExtra),
+      payment,
       principal: roundToCents(principalPaid + appliedExtra),
       interest,
       balance,
       totalInterest
     });
+
+    if (balance === 0 && payoffMonth === 0) payoffMonth = m;
   }
 
+  const totalPrincipalPaid = roundToCents(schedule.reduce((sum, row) => sum + row.principal, 0));
+  if (schedule.length > 0 && totalPrincipalPaid !== amortizationPrincipal) {
+    const diff = roundToCents(amortizationPrincipal - totalPrincipalPaid);
+    schedule[schedule.length - 1].principal = roundToCents(schedule[schedule.length - 1].principal + diff);
+    schedule[schedule.length - 1].payment = roundToCents(schedule[schedule.length - 1].payment + diff);
+  }
+
+  const actualPayoffMonths = payoffMonth || n;
+  const totalPaymentsExcludingFee = roundToCents(schedule.reduce((sum, row) => sum + row.payment, 0));
+  const totalPayment = roundToCents(totalPaymentsExcludingFee + (deducted ? fee : 0));
+  const regulationZApr = solveRegulationZ_Apr(amountFinanced, monthlyPI, n);
+
   return {
-    loanAmount: principal,
+    loanAmount,
+    amortizationPrincipal,
+    amountFinanced,
     monthlyPayment: monthlyPI,
     originationFee: fee,
+    feeDeductedFromProceeds: deducted,
+    annualRate: input.annualRate,
+    apr: regulationZApr,
     totalInterest,
-    totalPayment: roundToCents(totalPaid + fee),
-    payoffMonths: payoffMonth || n,
+    totalPayment,
+    payoffMonths: actualPayoffMonths,
     schedule
   };
 }
 
-export function calculateAutoLoan(input: {
+export interface AutoLoanInput {
   vehiclePrice: number;
   downPayment: number;
   tradeInValue: number;
-  salesTaxPercent: number;
+  tradeInLoanPayoff?: number; // Loan payoff on trade-in (negative equity if payoff > tradeInValue)
+  salesTaxPercent: number; // State baseline sales tax rate %
+  localTaxPercent?: number; // Optional local sales tax rate %
+  stateCode?: string; // State code (e.g. 'CA', 'TX')
+  tradeInReducesTax?: boolean; // Manual override toggle: whether trade-in reduces taxable amount
   titleFees: number;
   dealerDocFee: number;
+  docFeeIsFinancingOnly?: boolean; // TILA Reg Z: fee is charged only to financing customers (default false)
+  manufacturerRebate?: number; // Optional manufacturer rebate $
+  rebateIsTaxable?: boolean; // Toggle: taxable rebate (applied after tax) vs non-taxable rebate (reduces tax base)
   annualRate: number;
   termMonths: number;
-}) {
+}
+
+export function calculateAutoLoan(input: AutoLoanInput) {
   const price = Math.max(0, input.vehiclePrice);
-  const down = Math.min(price, Math.max(0, input.downPayment));
+  const rebate = Math.max(0, input.manufacturerRebate || 0);
+  const rebateIsTaxable = input.rebateIsTaxable !== undefined ? input.rebateIsTaxable : true;
+  
+  // Trade-in allowance and loan payoff (negative equity)
   const tradeIn = Math.max(0, input.tradeInValue);
-  
-  // In most tax jurisdictions, trade-in reduces taxable amount
-  const taxableAmount = Math.max(0, price - tradeIn);
-  const salesTax = roundToCents(taxableAmount * (Math.max(0, input.salesTaxPercent) / 100));
-  const fees = roundToCents(Math.max(0, input.titleFees) + Math.max(0, input.dealerDocFee));
-  
-  const totalFinanced = Math.max(0, roundToCents(price - down - tradeIn + salesTax + fees));
+  const payoff = Math.max(0, input.tradeInLoanPayoff || 0);
+  const negativeEquity = Math.max(0, payoff - tradeIn);
+  const tradeInNetEquity = Math.max(0, tradeIn - payoff);
+
+  // 1. Determine whether trade-in reduces the taxable sales price
+  // State-specific statutory determination with manual override
+  const stateCfg = input.stateCode ? US_AUTO_SALES_TAX_LIST.find(s => s.code === input.stateCode) : undefined;
+  let tradeInReducesTax = true;
+  if (input.tradeInReducesTax !== undefined) {
+    tradeInReducesTax = input.tradeInReducesTax;
+  } else if (stateCfg) {
+    tradeInReducesTax = stateCfg.tradeInTaxCredit === true;
+  }
+
+  // 2. Taxable base calculation
+  // If rebate is non-taxable, it reduces vehicle price before sales tax
+  const preTaxPrice = !rebateIsTaxable ? Math.max(0, price - rebate) : price;
+  const taxableBase = tradeInReducesTax ? Math.max(0, preTaxPrice - tradeIn) : preTaxPrice;
+
+  // 3. Sales Tax Calculation (State + Local)
+  const combinedTaxPercent = Math.max(0, input.salesTaxPercent) + Math.max(0, input.localTaxPercent || 0);
+  let salesTax = roundToCents(taxableBase * (combinedTaxPercent / 100));
+
+  // Statutory state caps
+  if (stateCfg?.maxTaxCap !== undefined) {
+    salesTax = Math.min(salesTax, stateCfg.maxTaxCap);
+  } else if (input.stateCode === 'SC') {
+    // South Carolina IMF 5% capped at $500 max
+    salesTax = Math.min(salesTax, 500);
+  } else if (input.stateCode === 'NC') {
+    // North Carolina HUT 3% capped at $2,000 max on standard passenger vehicles
+    salesTax = Math.min(salesTax, 2000);
+  }
+
+  // 4. Fees
+  const titleFees = Math.max(0, input.titleFees || 0);
+  const docFee = Math.max(0, input.dealerDocFee || 0);
+  const totalFees = roundToCents(titleFees + docFee);
+
+  // Down Payment
+  const down = Math.min(price + salesTax + totalFees, Math.max(0, input.downPayment || 0));
+
+  // 5. Total Financed Amount:
+  // Vehicle Price + Sales Tax + Fees - Down Payment - Rebate - Trade-in Value + Trade-in Payoff
+  // (Negative equity is added to the amount financed; net positive trade equity reduces it)
+  const totalFinanced = Math.max(0, roundToCents(price + salesTax + totalFees - down - rebate - tradeIn + payoff));
+
+  // 6. Monthly Payment & Amortization Schedule with Final Payment True-Up
   const rate = Math.max(0, input.annualRate) / 100 / 12;
   const n = Math.max(1, input.termMonths);
 
@@ -482,19 +658,95 @@ export function calculateAutoLoan(input: {
     }
   }
 
-  const totalPayments = roundToCents(monthlyPayment * n);
-  const totalInterest = Math.max(0, roundToCents(totalPayments - totalFinanced));
-  const totalVehicleCost = roundToCents(down + tradeIn + totalPayments);
+  let balance = totalFinanced;
+  let totalInterest = 0;
+  let totalPrincipalPaid = 0;
+  const schedule: any[] = [];
+  let finalPayment = monthlyPayment;
+
+  for (let m = 1; m <= n; m++) {
+    if (balance <= 0) break;
+    const interest = roundToCents(balance * rate);
+    let principal: number;
+    let payment: number;
+
+    if (m === n) {
+      // Final Payment True-up: pays off remaining exact balance so schedule sums cleanly to totalFinanced
+      principal = balance;
+      payment = roundToCents(principal + interest);
+      finalPayment = payment;
+      balance = 0;
+    } else {
+      principal = roundToCents(monthlyPayment - interest);
+      if (principal >= balance) {
+        principal = balance;
+        payment = roundToCents(principal + interest);
+        finalPayment = payment;
+        balance = 0;
+      } else {
+        payment = monthlyPayment;
+        balance = roundToCents(balance - principal);
+      }
+    }
+
+    totalPrincipalPaid = roundToCents(totalPrincipalPaid + principal);
+    totalInterest = roundToCents(totalInterest + interest);
+
+    schedule.push({
+      month: m,
+      payment,
+      principal,
+      interest,
+      balance,
+      totalInterest
+    });
+  }
+
+  const totalPayments = roundToCents(schedule.reduce((sum, s) => sum + s.payment, 0));
+  const totalVehicleCost = roundToCents(down + tradeInNetEquity + totalPayments);
+
+  // 7. Regulation Z Actuarial APR:
+  // Under Reg Z § 1026.4, documentation fees charged to cash buyers too are NOT finance charges.
+  // Only fees charged strictly to financing customers count as prepaid finance charges.
+  const docFeeIsFinancingOnly = Boolean(input.docFeeIsFinancingOnly);
+  const prepaidFinanceCharges = docFeeIsFinancingOnly ? docFee : 0;
+  const amountFinancedForApr = Math.max(0, roundToCents(totalFinanced - prepaidFinanceCharges));
+
+  let regulationZApr: number;
+  let aprLabel: string;
+  if (prepaidFinanceCharges === 0 || totalFinanced === 0) {
+    regulationZApr = input.annualRate;
+    aprLabel = `${regulationZApr.toFixed(2)}% APR (Equals note rate - doc fee payable in cash transactions too)`;
+  } else {
+    regulationZApr = solveRegulationZ_Apr(amountFinancedForApr, monthlyPayment, n);
+    aprLabel = `${regulationZApr.toFixed(3)}% APR (Includes financing-only doc fee under Reg Z)`;
+  }
 
   return {
     vehiclePrice: price,
-    totalFinanced,
+    taxableBase,
     salesTax,
-    fees,
+    fees: totalFees,
+    titleFees,
+    dealerDocFee: docFee,
+    negativeEquity,
+    tradeInNetEquity,
+    tradeInValue: tradeIn,
+    tradeInLoanPayoff: payoff,
+    manufacturerRebate: rebate,
+    rebateIsTaxable,
+    tradeInReducesTax,
+    totalFinanced,
     monthlyPayment,
+    finalPayment,
     totalInterest,
     totalPayments,
-    totalVehicleCost
+    totalVehicleCost,
+    amountFinancedForApr,
+    prepaidFinanceCharges,
+    regulationZApr,
+    aprLabel,
+    schedule
   };
 }
 
@@ -687,48 +939,285 @@ export function calculatePayment(input: {
   }
 }
 
-export function calculateSalary(input: {
+export interface SalaryInput {
   amount: number;
   frequency: 'hourly' | 'daily' | 'weekly' | 'biweekly' | 'semimonthly' | 'monthly' | 'annual';
-  hoursPerWeek: number;
-  daysPerWeek: number;
-  weeksPerYear: number;
-  overtimeHours?: number;
-  estimatedTaxPercent?: number;
-}) {
-  const hpw = Math.max(1, input.hoursPerWeek || 40);
-  const dpw = Math.max(1, input.daysPerWeek || 5);
-  const wpy = Math.max(1, input.weeksPerYear || 52);
-  const otHours = Math.max(0, input.overtimeHours || 0);
-  const taxRate = Math.max(0, Math.min(100, input.estimatedTaxPercent || 22)) / 100;
+  hoursPerWeek?: number;
+  daysPerWeek?: number;
+  weeksPerYear?: number;
+  paidWeeks?: number;
+  unpaidWeeks?: number;
+  overtimeHours?: number; // Extra overtime hours per week
+  isExempt?: boolean; // FLSA exempt (true) vs non-exempt (false, default false)
+  applyCaliforniaDailyOvertime?: boolean;
+  dailyHours?: number[]; // Array of hours worked per day (e.g. 7 days: [8, 8, 8, 8, 8, 0, 0])
+  
+  // Real statutory tax engine inputs
+  year?: number;
+  filingStatus?: FilingStatus;
+  stateCode?: string;
+  preTax401k?: number;
+  preTaxHsaFsa?: number;
 
-  // Convert input to hourly baseline
+  // Optional flat tax override
+  useFlatTaxOverride?: boolean;
+  estimatedTaxPercent?: number; // default 20%
+}
+
+/**
+ * Calculates California statutory daily overtime and double-time
+ * Sourced under Cal. Lab. Code § 510 and IWC Wage Orders:
+ * - 1.5x for hours worked over 8 up to 12 in a workday, and first 8 hours on 7th consecutive day of work
+ * - 2.0x (double time) for hours worked over 12 in a workday, and hours over 8 on 7th consecutive day
+ * - 1.5x for any non-overtime weekly hours exceeding 40
+ */
+export function calculateCaliforniaDailyOvertime(baseHourly: number, dailyHours: number[]) {
+  let regularHours = 0;
+  let ot15Hours = 0;
+  let dt20Hours = 0;
+  const daysWorked = dailyHours.filter(h => h > 0).length;
+  const isSeventhConsecutiveDay = daysWorked === 7;
+
+  for (let d = 0; d < dailyHours.length; d++) {
+    const hours = Math.max(0, dailyHours[d] || 0);
+    if (hours <= 0) continue;
+
+    if (d === 6 && isSeventhConsecutiveDay) {
+      // 7th consecutive day of work in workweek
+      if (hours <= 8) {
+        ot15Hours += hours;
+      } else {
+        ot15Hours += 8;
+        dt20Hours += (hours - 8);
+      }
+    } else {
+      // Days 1 through 6
+      if (hours <= 8) {
+        regularHours += hours;
+      } else if (hours <= 12) {
+        regularHours += 8;
+        ot15Hours += (hours - 8);
+      } else {
+        regularHours += 8;
+        ot15Hours += 4; // hours 8 to 12
+        dt20Hours += (hours - 12); // hours over 12
+      }
+    }
+  }
+
+  // California weekly safety rule: any regular hours exceeding 40 in workweek are paid at 1.5x
+  if (regularHours > 40) {
+    const weeklyOt = regularHours - 40;
+    regularHours = 40;
+    ot15Hours += weeklyOt;
+  }
+
+  const regularPay = roundToCents(regularHours * baseHourly);
+  const otPay = roundToCents(ot15Hours * baseHourly * 1.5);
+  const dtPay = roundToCents(dt20Hours * baseHourly * 2.0);
+  const totalGross = roundToCents(regularPay + otPay + dtPay);
+
+  return {
+    regularHours,
+    ot15Hours,
+    dt20Hours,
+    totalHours: regularHours + ot15Hours + dt20Hours,
+    regularPay,
+    otPay,
+    dtPay,
+    totalGross
+  };
+}
+
+export function calculateSalary(input: SalaryInput) {
+  const hpw = Math.max(1, input.hoursPerWeek !== undefined ? input.hoursPerWeek : 40);
+  const dpw = Math.max(1, input.daysPerWeek !== undefined ? input.daysPerWeek : 5);
+  const unpaidWeeks = Math.max(0, input.unpaidWeeks || 0);
+  const paidWeeks = input.paidWeeks !== undefined 
+    ? Math.max(1, input.paidWeeks) 
+    : Math.max(1, (input.weeksPerYear || 52) - unpaidWeeks);
+  const isExempt = Boolean(input.isExempt);
+  const extraOtHours = Math.max(0, input.overtimeHours || 0);
+
+  // 1. Convert input to base hourly regular rate
   let baseHourly = 0;
   switch (input.frequency) {
-    case 'hourly': baseHourly = input.amount; break;
-    case 'daily': baseHourly = input.amount / (hpw / dpw); break;
-    case 'weekly': baseHourly = input.amount / hpw; break;
-    case 'biweekly': baseHourly = input.amount / (hpw * 2); break;
-    case 'semimonthly': baseHourly = (input.amount * 24) / (hpw * wpy); break;
-    case 'monthly': baseHourly = (input.amount * 12) / (hpw * wpy); break;
-    case 'annual': baseHourly = input.amount / (hpw * wpy); break;
+    case 'hourly':
+      baseHourly = input.amount;
+      break;
+    case 'daily':
+      baseHourly = input.amount / (hpw / dpw);
+      break;
+    case 'weekly':
+      // Under FLSA, if non-exempt employee is quoted a weekly amount for a workweek > 40 hours:
+      baseHourly = (!isExempt && hpw > 40) ? input.amount / (40 + 1.5 * (hpw - 40)) : input.amount / hpw;
+      break;
+    case 'biweekly':
+      baseHourly = (!isExempt && hpw > 40) ? input.amount / ((40 + 1.5 * (hpw - 40)) * 2) : input.amount / (hpw * 2);
+      break;
+    case 'semimonthly': {
+      const annualEq = input.amount * 24;
+      const weeklyEq = annualEq / paidWeeks;
+      baseHourly = (!isExempt && hpw > 40) ? weeklyEq / (40 + 1.5 * (hpw - 40)) : weeklyEq / hpw;
+      break;
+    }
+    case 'monthly': {
+      const annualEq = input.amount * 12;
+      const weeklyEq = annualEq / paidWeeks;
+      baseHourly = (!isExempt && hpw > 40) ? weeklyEq / (40 + 1.5 * (hpw - 40)) : weeklyEq / hpw;
+      break;
+    }
+    case 'annual': {
+      const weeklyEq = input.amount / paidWeeks;
+      baseHourly = (!isExempt && hpw > 40) ? weeklyEq / (40 + 1.5 * (hpw - 40)) : weeklyEq / hpw;
+      break;
+    }
   }
 
   const overtimeHourly = baseHourly * 1.5;
-  const weeklyGross = (baseHourly * hpw) + (overtimeHourly * otHours);
-  const annualGross = weeklyGross * wpy;
+  const doubleTimeHourly = baseHourly * 2.0;
 
-  const row = (name: string, gross: number) => ({
-    period: name,
-    gross: roundToCents(gross),
-    tax: roundToCents(gross * taxRate),
-    net: roundToCents(gross * (1 - taxRate))
-  });
+  // 2. FLSA & State Overtime Pay Computation
+  let regularHours = 0;
+  let ot15Hours = 0;
+  let dt20Hours = 0;
+  let weeklyGross = 0;
+
+  if (input.applyCaliforniaDailyOvertime && input.dailyHours && input.dailyHours.length > 0) {
+    // California statutory daily overtime model
+    const caRes = calculateCaliforniaDailyOvertime(baseHourly, input.dailyHours);
+    regularHours = caRes.regularHours;
+    ot15Hours = caRes.ot15Hours + extraOtHours;
+    dt20Hours = caRes.dt20Hours;
+    weeklyGross = roundToCents(caRes.totalGross + (extraOtHours * overtimeHourly));
+  } else if (isExempt) {
+    // FLSA Exempt employee: no statutory 1.5x overtime requirement
+    regularHours = hpw;
+    ot15Hours = extraOtHours;
+    weeklyGross = roundToCents((baseHourly * hpw) + (baseHourly * extraOtHours));
+  } else {
+    // FLSA Non-exempt employee: hours over 40 in a workweek paid at 1.5x regular rate
+    if (hpw > 40) {
+      regularHours = 40;
+      ot15Hours = (hpw - 40) + extraOtHours;
+    } else {
+      regularHours = hpw;
+      ot15Hours = extraOtHours;
+    }
+    weeklyGross = roundToCents((baseHourly * regularHours) + (overtimeHourly * ot15Hours));
+  }
+
+  // 3. Annualization with customizable paid weeks
+  let annualGross: number;
+  if (input.frequency === 'annual' && extraOtHours === 0 && (!input.applyCaliforniaDailyOvertime) && (isExempt || hpw <= 40)) {
+    annualGross = roundToCents(input.amount);
+    weeklyGross = roundToCents(annualGross / paidWeeks);
+  } else if (input.frequency === 'semimonthly' && extraOtHours === 0 && (!input.applyCaliforniaDailyOvertime) && (isExempt || hpw <= 40)) {
+    annualGross = roundToCents(input.amount * 24);
+    weeklyGross = roundToCents(annualGross / paidWeeks);
+  } else if (input.frequency === 'monthly' && extraOtHours === 0 && (!input.applyCaliforniaDailyOvertime) && (isExempt || hpw <= 40)) {
+    annualGross = roundToCents(input.amount * 12);
+    weeklyGross = roundToCents(annualGross / paidWeeks);
+  } else if (input.frequency === 'weekly' && extraOtHours === 0 && (!input.applyCaliforniaDailyOvertime) && (isExempt || hpw <= 40)) {
+    annualGross = roundToCents(input.amount * paidWeeks);
+  } else if (input.frequency === 'biweekly' && extraOtHours === 0 && (!input.applyCaliforniaDailyOvertime) && (isExempt || hpw <= 40)) {
+    annualGross = roundToCents(input.amount * (paidWeeks / 2));
+  } else {
+    annualGross = roundToCents(weeklyGross * paidWeeks);
+  }
+
+  // 4. Tax Calculation: Comprehensive Tax Engine vs Flat Override
+  let totalTax = 0;
+  let federalTax = 0;
+  let ficaTax = 0;
+  let stateTax = 0;
+  let totalPreTax = 0;
+  let annualNet = 0;
+  let effectiveTaxRate = 0;
+  let taxMethod: 'statutory' | 'flat_override' = 'statutory';
+  let comprehensiveTaxDetails: any = undefined;
+
+  const defaultEstimatedTax = 20; // Consistent 20% default between engine and UI
+
+  if (input.useFlatTaxOverride) {
+    taxMethod = 'flat_override';
+    const flatRate = Math.max(0, Math.min(100, input.estimatedTaxPercent !== undefined ? input.estimatedTaxPercent : defaultEstimatedTax)) / 100;
+    totalTax = roundToCents(annualGross * flatRate);
+    annualNet = roundToCents(annualGross - totalTax);
+    effectiveTaxRate = flatRate * 100;
+    // Approximated breakdown for display
+    federalTax = roundToCents(totalTax * 0.60);
+    ficaTax = roundToCents(totalTax * 0.25);
+    stateTax = roundToCents(totalTax * 0.15);
+  } else {
+    taxMethod = 'statutory';
+    const year = input.year ?? DEFAULT_TAX_YEAR;
+    const filingStatus = input.filingStatus ?? 'single';
+    const stateCode = (input.stateCode ?? 'CA').toUpperCase();
+    const preTax401k = Math.max(0, input.preTax401k || 0);
+    const preTaxHsaFsa = Math.max(0, input.preTaxHsaFsa || 0);
+
+    const compTax = calculateComprehensiveTax({
+      annualIncome: annualGross,
+      year,
+      filingStatus,
+      stateCode,
+      preTax401k,
+      preTaxHsaFsa
+    });
+
+    comprehensiveTaxDetails = compTax;
+    federalTax = compTax.federalTax;
+    ficaTax = compTax.ficaTax;
+    stateTax = compTax.stateTax;
+    totalTax = compTax.totalTax;
+    totalPreTax = compTax.totalPreTax;
+    annualNet = compTax.netTakeHome;
+    effectiveTaxRate = compTax.totalEffectiveTaxRate;
+  }
+
+  // 5. Pay Period Conversion Matrix
+  const periodTaxRate = effectiveTaxRate / 100;
+  const row = (name: string, gross: number) => {
+    const g = roundToCents(gross);
+    const t = roundToCents(g * periodTaxRate);
+    return {
+      period: name,
+      gross: g,
+      tax: t,
+      net: roundToCents(g - t)
+    };
+  };
+
+  const stateRuleNotes: string[] = [];
+  const stateCodeUpper = (input.stateCode || 'CA').toUpperCase();
+  if (US_STATE_OVERTIME_RULES[stateCodeUpper]) {
+    stateRuleNotes.push(`${stateCodeUpper} Overtime Law: ${US_STATE_OVERTIME_RULES[stateCodeUpper].ruleSummary}`);
+  }
 
   return {
     baseHourly: roundToCents(baseHourly),
+    overtimeHourly: roundToCents(overtimeHourly),
+    doubleTimeHourly: roundToCents(doubleTimeHourly),
+    regularHours,
+    overtimeHours: ot15Hours,
+    doubleTimeHours: dt20Hours,
+    totalHours: regularHours + ot15Hours + dt20Hours,
+    weeklyGross: roundToCents(weeklyGross),
     annualGross: roundToCents(annualGross),
-    annualNet: roundToCents(annualGross * (1 - taxRate)),
+    annualNet: roundToCents(annualNet),
+    paidWeeks,
+    unpaidWeeks,
+    isExempt,
+    taxMethod,
+    totalTax: roundToCents(totalTax),
+    federalTax: roundToCents(federalTax),
+    ficaTax: roundToCents(ficaTax),
+    stateTax: roundToCents(stateTax),
+    totalPreTax: roundToCents(totalPreTax),
+    effectiveTaxRate: Math.round(effectiveTaxRate * 100) / 100,
+    comprehensiveTaxDetails,
+    stateRuleNotes,
     breakdown: [
       row('Hourly', baseHourly),
       row('Daily', weeklyGross / dpw),
@@ -787,49 +1276,140 @@ export function calculateInterestRate(input: {
   };
 }
 
+export type TaxableItemType = 'general' | 'groceries' | 'clothing' | 'prescription' | 'restaurant';
+export type DiscountType = 'store' | 'manufacturer';
+
+export interface SalesTaxInput {
+  amount: number;
+  mode: 'add_tax' | 'extract_tax';
+  stateRate: number;
+  localRate: number;
+  discountPercent?: number;
+  discountType?: DiscountType;
+  itemType?: TaxableItemType;
+  stateCode?: string;
+}
+
 export function calculateSalesTax(input: {
   amount: number;
   mode: 'add_tax' | 'extract_tax';
   stateRate: number;
   localRate: number;
   discountPercent?: number;
+  discountType?: DiscountType;
+  itemType?: TaxableItemType;
+  stateCode?: string;
 }) {
-  const discount = Math.max(0, Math.min(100, input.discountPercent || 0)) / 100;
+  const discountPct = Math.max(0, Math.min(100, input.discountPercent || 0));
+  const discountRate = discountPct / 100;
+  const discountType = input.discountType || 'store';
+  const itemType = input.itemType || 'general';
+  const stateCode = (input.stateCode || 'CA').toUpperCase();
+
   const stateR = Math.max(0, input.stateRate) / 100;
   const localR = Math.max(0, input.localRate) / 100;
-  const totalR = stateR + localR;
+
+  let exemptionNote = '';
+  let effectiveMultiplier = 1.0;
+
+  if (itemType === 'prescription') {
+    effectiveMultiplier = 0;
+    exemptionNote = 'Prescription drugs are exempt from sales tax in nearly all US states.';
+  } else if (itemType === 'groceries') {
+    const exemptStates = ['CA', 'TX', 'NY', 'MA', 'FL', 'PA', 'OH', 'MI', 'NJ', 'VA', 'MD', 'CT', 'CO'];
+    if (exemptStates.includes(stateCode)) {
+      effectiveMultiplier = 0;
+      exemptionNote = `${stateCode} exempts unprepared grocery food from sales tax.`;
+    } else {
+      exemptionNote = `${stateCode} taxes grocery food (exemption status varies by state/jurisdiction).`;
+    }
+  } else if (itemType === 'clothing') {
+    if (stateCode === 'NY' && input.amount <= 110) {
+      effectiveMultiplier = 0;
+      exemptionNote = 'New York exempts clothing and footwear items priced under $110.';
+    } else if (stateCode === 'MA' && input.amount <= 175) {
+      effectiveMultiplier = 0;
+      exemptionNote = 'Massachusetts exempts clothing items priced under $175.';
+    } else if (['PA', 'NJ', 'MN'].includes(stateCode)) {
+      effectiveMultiplier = 0;
+      exemptionNote = `${stateCode} generally exempts most clothing apparel from sales tax.`;
+    } else {
+      exemptionNote = `Clothing is taxable at standard rates in ${stateCode} (threshold exemptions may apply).`;
+    }
+  } else {
+    exemptionNote = `General merchandise / prepared meals are fully taxable in ${stateCode}.`;
+  }
+
+  const effectiveStateR = stateR * effectiveMultiplier;
+  const effectiveLocalR = localR * effectiveMultiplier;
+  const totalR = effectiveStateR + effectiveLocalR;
 
   if (input.mode === 'add_tax') {
     const raw = Math.max(0, input.amount);
-    const discounted = roundToCents(raw * (1 - discount));
-    const stateTax = roundToCents(discounted * stateR);
-    const localTax = roundToCents(discounted * localR);
-    const totalTax = roundToCents(discounted * totalR);
-    const finalTotal = roundToCents(discounted + totalTax);
+    let taxableBase = raw;
+    let savings = 0;
+
+    if (discountType === 'store') {
+      const discountedRaw = raw * (1 - discountRate);
+      taxableBase = roundToCents(discountedRaw);
+      savings = roundToCents(raw * discountRate);
+    } else {
+      savings = roundToCents(raw * discountRate);
+      taxableBase = roundToCents(raw);
+    }
+
+    // Sales tax computed per jurisdiction: round state and local separately to cents, then sum
+    const stateTax = roundToCents(taxableBase * effectiveStateR);
+    const localTax = roundToCents(taxableBase * effectiveLocalR);
+    const totalTax = roundToCents(stateTax + localTax);
+    const finalTotal = roundToCents(taxableBase + totalTax);
 
     return {
-      beforeTax: discounted,
+      beforeTax: taxableBase,
+      rawAmount: raw,
       stateTax,
       localTax,
       totalTax,
       finalTotal,
-      savings: roundToCents(raw * discount)
+      savings,
+      centAdjustment: 0,
+      exemptionNote,
+      itemType,
+      stateCode
     };
   } else {
-    // Reverse tax extraction
+    // Reverse tax extraction mode
     const total = Math.max(0, input.amount);
-    const beforeTax = roundToCents(total / (1 + totalR));
-    const totalTax = roundToCents(total - beforeTax);
-    const stateTax = roundToCents(beforeTax * stateR);
-    const localTax = roundToCents(beforeTax * localR);
+    const beforeTaxRaw = total / (1 + totalR);
+    let beforeTax = roundToCents(beforeTaxRaw);
+    let stateTax = roundToCents(beforeTax * effectiveStateR);
+    let localTax = roundToCents(beforeTax * effectiveLocalR);
+    let totalTax = roundToCents(stateTax + localTax);
+    let calculatedTotal = roundToCents(beforeTax + totalTax);
+    let centAdjustment = roundToCents(total - calculatedTotal);
+
+    if (centAdjustment !== 0) {
+      beforeTax = roundToCents(beforeTax + centAdjustment);
+      calculatedTotal = roundToCents(beforeTax + totalTax);
+      centAdjustment = roundToCents(total - calculatedTotal);
+      if (centAdjustment !== 0) {
+        stateTax = roundToCents(stateTax + centAdjustment);
+      }
+      totalTax = roundToCents(stateTax + localTax);
+    }
 
     return {
       beforeTax,
+      rawAmount: total,
       stateTax,
       localTax,
       totalTax,
       finalTotal: total,
-      savings: 0
+      savings: 0,
+      centAdjustment,
+      exemptionNote,
+      itemType,
+      stateCode
     };
   }
 }
@@ -896,8 +1476,10 @@ export const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Au
 export const FULL_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 export function parseStartDate(startDateStr?: string): { year: number; month: number } {
-  const fallbackYear = 2026;
-  const fallbackMonth = 10;
+  const nextMonthDate = new Date();
+  nextMonthDate.setMonth(nextMonthDate.getMonth() + 1);
+  const fallbackYear = nextMonthDate.getFullYear();
+  const fallbackMonth = nextMonthDate.getMonth() + 1;
   if (!startDateStr || typeof startDateStr !== 'string') {
     return { year: fallbackYear, month: fallbackMonth };
   }
@@ -974,24 +1556,59 @@ export function computePayoffMonthYear(startDateStr: string, totalMonths: number
 }
 
 export function calculateMortgage(input: MortgageInput) {
-  // 1. Validate and Calculate Loan Amount
+  const loanProgram = input.loanProgram || 'conventional';
   const homePrice = Math.max(0, input.homePrice);
   const downPayment = Math.min(homePrice, Math.max(0, input.downPayment));
-  const loanAmount = homePrice - downPayment;
+  const baseLoanAmount = Math.max(0, homePrice - downPayment);
+  const downPaymentPercent = homePrice > 0 ? (downPayment / homePrice) * 100 : 0;
+  const originalLtv = homePrice > 0 ? (baseLoanAmount / homePrice) * 100 : 0;
 
-  // 2. Interest Rate & Term
+  // 1. Program-specific upfront fees and financing
+  let upfrontFee = 0;
+  let upfrontFeeRate = 0;
+  let upfrontFeeName = '';
+
+  if (loanProgram === 'fha') {
+    upfrontFeeRate = US_MORTGAGE_CONFIG_2026.fha.upfrontMipRate; // 1.75%
+    upfrontFee = roundToCents(baseLoanAmount * upfrontFeeRate);
+    upfrontFeeName = 'FHA Upfront MIP (1.75%)';
+  } else if (loanProgram === 'va') {
+    upfrontFeeRate = US_MORTGAGE_CONFIG_2026.va.getFundingFeeRate(
+      downPaymentPercent,
+      Boolean(input.vaIsSubsequentUse),
+      Boolean(input.vaIsExempt)
+    );
+    upfrontFee = roundToCents(baseLoanAmount * upfrontFeeRate);
+    upfrontFeeName = input.vaIsExempt ? 'VA Funding Fee (Exempt)' : `VA Funding Fee (${(upfrontFeeRate * 100).toFixed(2)}%)`;
+  } else if (loanProgram === 'usda') {
+    upfrontFeeRate = US_MORTGAGE_CONFIG_2026.usda.upfrontGuaranteeFeeRate; // 1.0%
+    upfrontFee = roundToCents(baseLoanAmount * upfrontFeeRate);
+    upfrontFeeName = 'USDA Upfront Guarantee Fee (1.00%)';
+  }
+
+  // Fees are financed by default in government loans (FHA/VA/USDA) unless upfrontFeeFinanced is explicitly false
+  const isUpfrontFeeFinanced = input.upfrontFeeFinanced !== undefined
+    ? input.upfrontFeeFinanced
+    : (loanProgram !== 'conventional' && upfrontFee > 0);
+
+  const loanAmount = isUpfrontFeeFinanced ? roundToCents(baseLoanAmount + upfrontFee) : baseLoanAmount;
+
+  // 2. Validate Term: Ensure termYears * 12 is an integer
+  const termYears = Math.max(0.5, input.termYears);
+  const totalPeriods = Math.max(1, Math.round(termYears * 12));
+  const normalizedTermYears = totalPeriods / 12;
+
+  // 3. Interest Rate
   const annualRate = Math.max(0, input.annualRate);
   const monthlyRate = annualRate / 100 / 12;
-  const termYears = Math.max(1, input.termYears);
-  const totalPeriods = termYears * 12;
 
-  // 2b. Parse Calendar Start Date
+  // 4. Start Date
   const parsedStart = parseStartDate(input.startDate);
   const startYear = parsedStart.year;
   const startMonth = parsedStart.month;
   const startDateStr = formatMonthYear(startYear, startMonth);
 
-  // 3. Monthly P&I Calculation (Fixed Rate formula)
+  // 5. Monthly P&I
   let monthlyPI = 0;
   if (loanAmount > 0) {
     if (monthlyRate === 0) {
@@ -1003,34 +1620,115 @@ export function calculateMortgage(input: MortgageInput) {
     }
   }
 
-  // 4. Initial Annual Costs
-  let currentTaxAnnual = input.taxPercent ? (homePrice * input.taxPercent / 100) : 0;
-  let currentInsAnnual = input.insuranceAnnual || 0;
-  let currentHoaAnnual = (input.hoaAnnual || 0);
-  let currentOtherAnnual = input.otherAnnual || 0;
+  // 6. Baseline Original Scheduled Amortization (NO extra payments)
+  // Required under HPA 1998 for 78% automatic termination and midpoint termination
+  const originalScheduledBalances: number[] = new Array(totalPeriods + 1);
+  originalScheduledBalances[0] = loanAmount;
+  let origSchedBal = loanAmount;
+  for (let m = 1; m <= totalPeriods; m++) {
+    if (origSchedBal <= 0) {
+      originalScheduledBalances[m] = 0;
+      continue;
+    }
+    const origInterest = roundToCents(origSchedBal * monthlyRate);
+    let origPrincipal = roundToCents(monthlyPI - origInterest);
+    if (origPrincipal >= origSchedBal || m === totalPeriods) {
+      origPrincipal = origSchedBal;
+      origSchedBal = 0;
+    } else {
+      origSchedBal = roundToCents(origSchedBal - origPrincipal);
+    }
+    originalScheduledBalances[m] = origSchedBal;
+  }
 
-  // Auto-PMI Standard (Applied if explicitly configured or autoPmi enabled when Down Payment < 20% until 80% LTV)
-  const downPaymentPercent = homePrice > 0 ? roundToCents((downPayment / homePrice) * 100) : 0;
-  const isPmiApplicable = downPaymentPercent < 20 && loanAmount > 0 && (input.pmiAnnual !== undefined || input.autoPmi === true);
-  const basePmiAnnual = input.pmiAnnual !== undefined && input.pmiAnnual > 0 
-    ? input.pmiAnnual 
-    : (isPmiApplicable ? roundToCents(loanAmount * 0.0075) : 0);
+  // 7. Mortgage Insurance / MIP Determination
+  // RULE: Apply ONLY from explicit inputs. If user enters 0, it is 0.
+  // For conventional loans under 20% down with no entered PMI (undefined), use config default rate (0.75%).
+  let basePmiAnnual = 0;
+  let isPmiApplicable = false;
+  let pmiEstimateLabel: string | null = null;
+
+  if (loanProgram === 'conventional') {
+    if (input.pmiAnnual !== undefined) {
+      basePmiAnnual = Math.max(0, input.pmiAnnual);
+      isPmiApplicable = basePmiAnnual > 0;
+    } else if (originalLtv > 80 && baseLoanAmount > 0) {
+      // Default rate from config (assumption, labeled "estimate")
+      basePmiAnnual = roundToCents(baseLoanAmount * US_MORTGAGE_CONFIG_2026.pmiConventionalDefaultRate);
+      isPmiApplicable = basePmiAnnual > 0;
+      pmiEstimateLabel = `Estimated standard PMI (~0.75% of loan)`;
+    }
+  } else if (loanProgram === 'fha') {
+    if (input.pmiAnnual !== undefined) {
+      basePmiAnnual = Math.max(0, input.pmiAnnual);
+      isPmiApplicable = basePmiAnnual > 0;
+    } else {
+      const fhaRate = US_MORTGAGE_CONFIG_2026.fha.getAnnualMipRate(originalLtv, normalizedTermYears, baseLoanAmount);
+      basePmiAnnual = roundToCents(baseLoanAmount * fhaRate);
+      isPmiApplicable = basePmiAnnual > 0;
+      pmiEstimateLabel = `HUD statutory annual MIP (${(fhaRate * 100).toFixed(2)}%)`;
+    }
+  } else if (loanProgram === 'va') {
+    // VA has NO monthly mortgage insurance
+    if (input.pmiAnnual !== undefined) {
+      basePmiAnnual = Math.max(0, input.pmiAnnual);
+      isPmiApplicable = basePmiAnnual > 0;
+    } else {
+      basePmiAnnual = 0;
+      isPmiApplicable = false;
+    }
+  } else if (loanProgram === 'usda') {
+    if (input.pmiAnnual !== undefined) {
+      basePmiAnnual = Math.max(0, input.pmiAnnual);
+      isPmiApplicable = basePmiAnnual > 0;
+    } else {
+      basePmiAnnual = roundToCents(baseLoanAmount * US_MORTGAGE_CONFIG_2026.usda.annualFeeRate); // 0.35%
+      isPmiApplicable = basePmiAnnual > 0;
+      pmiEstimateLabel = `USDA annual fee (0.35%)`;
+    }
+  }
+
   const pmiMonthly = roundToCents(basePmiAnnual / 12);
 
-  // 5. Increases (Annual %)
+  // Determine statutory PMI / MIP duration & termination conditions:
+  // Conventional:
+  //   (a) Borrower-requested cancellation at 80% of original value (if requested)
+  //   (b) Automatic termination at 78% of original scheduled amortization
+  //   (c) Final termination at midpoint of the term (totalPeriods / 2)
+  const scheduledMonthAt78 = originalScheduledBalances.findIndex((b, idx) => idx > 0 && b <= homePrice * 0.78);
+  const midpointMonth = Math.ceil(totalPeriods / 2);
+
+  // FHA MIP Duration:
+  // If original LTV <= 90% (10%+ down): 11 years (132 months)
+  // If original LTV > 90%: life of loan
+  const fhaDurationMonths = originalLtv <= 90 ? 11 * 12 : totalPeriods;
+
+  // 8. Annual Property Taxes and Escrows
+  // If assessedValue is provided, calculate property tax on assessedValue; otherwise on homePrice
+  const propertyTaxBase = input.assessedValue !== undefined && input.assessedValue > 0 ? input.assessedValue : homePrice;
+  let currentTaxAnnual = input.taxPercent ? (propertyTaxBase * input.taxPercent / 100) : 0;
+  let currentInsAnnual = input.insuranceAnnual || 0;
+  let currentHoaAnnual = input.hoaAnnual || 0;
+  let currentOtherAnnual = input.otherAnnual || 0;
+
   const taxInc = (input.taxIncrease || 0) / 100;
   const insInc = (input.insuranceIncrease || 0) / 100;
   const hoaInc = (input.hoaIncrease || 0) / 100;
   const otherInc = (input.otherIncrease || 0) / 100;
 
-  // 6. Amortization Schedule Generation
+  // 9. Amortization Schedule Generation
   const schedule: any[] = [];
+  const pmiScheduleMonths: number[] = [];
   let balance = loanAmount;
   let totalInterest = 0;
   let totalPrincipalPaid = 0;
   let totalOutOfPocket = 0;
   let payoffMonth = 0;
   let pmiDropoffMonth = 0;
+
+  const userChosenYearlyMonth = (typeof input.extraYearlyMonth === 'number' && input.extraYearlyMonth >= 1 && input.extraYearlyMonth <= 12)
+    ? input.extraYearlyMonth
+    : undefined;
 
   for (let m = 1; m <= totalPeriods; m++) {
     if (balance <= 0) break;
@@ -1047,28 +1745,48 @@ export function calculateMortgage(input: MortgageInput) {
     const monthlyHoa = roundToCents(currentHoaAnnual / 12);
     const monthlyOther = roundToCents(currentOtherAnnual / 12);
 
-    // Homeowners Protection Act of 1998 (12 U.S.C. § 4901):
-    // - 80% LTV: Borrower requested cancellation right
-    // - 78% LTV: Automatic statutory termination requirement
-    const borrowerEligiblePmi = (balance > homePrice * 0.80 && isPmiApplicable);
-    const autoEligiblePmi = (balance > homePrice * 0.78 && isPmiApplicable);
-    const activePmi = borrowerEligiblePmi ? pmiMonthly : 0;
-    
-    if (balance <= homePrice * 0.80 && pmiDropoffMonth === 0 && isPmiApplicable) {
-      pmiDropoffMonth = m;
+    // Evaluate monthly mortgage insurance / MIP for period m
+    let activePmi = 0;
+    if (isPmiApplicable) {
+      if (loanProgram === 'conventional') {
+        const meetsBorrower80 = input.requestPmiCancellation80 === true && (balance <= homePrice * 0.80);
+        const schedBal = originalScheduledBalances[m] !== undefined ? originalScheduledBalances[m] : balance;
+        const meetsAuto78Scheduled = (schedBal <= homePrice * 0.78) || (scheduledMonthAt78 > 0 && m >= scheduledMonthAt78);
+        const meetsMidpoint = m >= midpointMonth;
+
+        const isTerminated = meetsBorrower80 || meetsAuto78Scheduled || meetsMidpoint;
+        if (!isTerminated) {
+          activePmi = pmiMonthly;
+        } else if (pmiDropoffMonth === 0) {
+          pmiDropoffMonth = m;
+        }
+      } else if (loanProgram === 'fha') {
+        if (m <= fhaDurationMonths) {
+          activePmi = pmiMonthly;
+        } else if (pmiDropoffMonth === 0) {
+          pmiDropoffMonth = m;
+        }
+      } else if (loanProgram === 'usda') {
+        // USDA annual fee lasts for the life of the loan; based on declining annual balance
+        // standard monthly installment
+        activePmi = roundToCents((balance * US_MORTGAGE_CONFIG_2026.usda.annualFeeRate) / 12) || pmiMonthly;
+      }
     }
-    let pmiAutoDropoffMonthTemp = 0;
-    if (balance <= homePrice * 0.78 && isPmiApplicable) {
-      pmiAutoDropoffMonthTemp = m;
-    }
+
+    pmiScheduleMonths.push(activePmi);
 
     const interest = roundToCents(balance * monthlyRate);
     let principal = roundToCents(monthlyPI - interest);
-    
+
     let appliedExtra = input.extraMonthly || 0;
-    if (m % 12 === 1 && m > 1) appliedExtra += (input.extraYearly || 0);
-    if (m === 1 && (input.extraYearly || 0) > 0) appliedExtra += (input.extraYearly || 0);
-    if (m === (input.extraOneTimeMonth || 0)) appliedExtra += (input.extraOneTime || 0);
+    // Extra yearly payment applied ONLY if the user explicitly chose the month it is paid (Requirement 13)
+    const monthOfYear = ((m - 1) % 12) + 1;
+    if (userChosenYearlyMonth !== undefined && monthOfYear === userChosenYearlyMonth && (input.extraYearly || 0) > 0) {
+      appliedExtra += (input.extraYearly || 0);
+    }
+    if (m === (input.extraOneTimeMonth || 0)) {
+      appliedExtra += (input.extraOneTime || 0);
+    }
 
     const monthlyNonPI = roundToCents(monthlyTax + monthlyIns + activePmi + monthlyHoa + monthlyOther);
     const currentTotalMonthly = roundToCents(monthlyPI + monthlyNonPI);
@@ -1087,7 +1805,6 @@ export function calculateMortgage(input: MortgageInput) {
     totalOutOfPocket = roundToCents(totalOutOfPocket + (principal + interest + appliedExtra + monthlyNonPI));
     if (balance <= 0 && payoffMonth === 0) payoffMonth = m;
 
-    // Calendar date for payment period m
     const totalMonthOffset = (startMonth - 1) + (m - 1);
     const paymentYear = startYear + Math.floor(totalMonthOffset / 12);
     const paymentMonth = (totalMonthOffset % 12) + 1;
@@ -1118,7 +1835,7 @@ export function calculateMortgage(input: MortgageInput) {
     });
   }
 
-  // 7. Payoff Dates and Milestone Analysis
+  // 10. Payoff Dates and Milestone Analysis
   const actualPayoffMonth = payoffMonth || totalPeriods;
   const payoffOffset = (startMonth - 1) + (actualPayoffMonth - 1);
   const payoffYear = startYear + Math.floor(payoffOffset / 12);
@@ -1141,7 +1858,7 @@ export function calculateMortgage(input: MortgageInput) {
   const monthsSaved = totalPeriods - actualPayoffMonth;
   const yearsSaved = roundToCents(monthsSaved / 12);
 
-  // 8. Calendar Year Amortization Breakdown (Tax-Ready)
+  // 11. Calendar Year Amortization Breakdown (Tax-Ready)
   const uniquePaymentYears = Array.from(new Set(schedule.map(s => s.paymentYear)));
   const calendarYearSchedule = uniquePaymentYears.map(calYear => {
     const monthsInYear = schedule.filter(s => s.paymentYear === calYear);
@@ -1165,7 +1882,7 @@ export function calculateMortgage(input: MortgageInput) {
     };
   });
 
-  // 9. Loan Year Schedule (12-month blocks)
+  // 12. Loan Year Schedule (12-month blocks)
   const loanYearSchedule = Array.from({ length: Math.ceil(actualPayoffMonth / 12) }, (_, i) => {
     const loanYear = i + 1;
     const yearMonths = schedule.filter(s => s.year === loanYear);
@@ -1189,16 +1906,66 @@ export function calculateMortgage(input: MortgageInput) {
   });
 
   const totalLoanCost = roundToCents(totalPrincipalPaid + totalInterest);
-  const regulationZApr = solveRegulationZ_Apr(loanAmount, monthlyPI, totalPeriods);
+
+  // 13. Regulation Z (TILA) APR Calculation
+  // Prepaid Finance Charges: Points + Origination Fee + Other Prepaid Finance Charges (+ Upfront fee if paid out-of-pocket)
+  const pointsFee = roundToCents(baseLoanAmount * ((input.pointsPercent || 0) / 100));
+  const origFee = Math.max(0, input.originationFee || 0);
+  const otherPrepaid = Math.max(0, input.otherPrepaidFinanceCharges || 0);
+  const upfrontFeePrepaid = !isUpfrontFeeFinanced ? upfrontFee : 0;
+  const totalPrepaidFinanceCharges = roundToCents(pointsFee + origFee + otherPrepaid + upfrontFeePrepaid);
+
+  // Amount Financed = Principal Loan Amount minus Prepaid Finance Charges
+  const amountFinanced = Math.max(0, roundToCents(loanAmount - totalPrepaidFinanceCharges));
+
+  // Payment series for APR: P&I + monthly mortgage insurance (PMI / MIP is a finance charge under Reg Z § 1026.4)
+  // Scheduled contract payments without voluntary extra payments
+  const aprPaymentSeries: number[] = new Array(totalPeriods);
+  for (let k = 0; k < totalPeriods; k++) {
+    const miPayment = pmiScheduleMonths[k] || 0;
+    aprPaymentSeries[k] = roundToCents(monthlyPI + miPayment);
+  }
+
+  const hasFeesOrMi = totalPrepaidFinanceCharges > 0 || isPmiApplicable || upfrontFee > 0;
+  let regulationZApr: number;
+  let aprLabel: string;
+
+  if (!hasFeesOrMi) {
+    regulationZApr = annualRate;
+    aprLabel = 'APR equals note rate (no fees entered)';
+  } else {
+    regulationZApr = solveRegulationZ_AprSeries(amountFinanced, aprPaymentSeries);
+    aprLabel = `${regulationZApr.toFixed(3)}% APR (Reg Z TILA)`;
+  }
+
+  // 14. Conforming & FHA Loan Limit Compliance Warnings
+  const warnings: string[] = [];
+  const conformingLimit = US_MORTGAGE_CONFIG_2026.conformingLoanLimit.baseline;
+  const fhaLimit = US_MORTGAGE_CONFIG_2026.fhaLoanLimit.floor;
+
+  if (loanProgram === 'conventional' && baseLoanAmount > conformingLimit) {
+    warnings.push(`Loan amount ($${new Intl.NumberFormat().format(baseLoanAmount)}) exceeds the 2026 baseline Conforming Loan Limit ($${new Intl.NumberFormat().format(conformingLimit)}). This loan will be classified as a Jumbo Mortgage and may require higher reserve and credit qualifications.`);
+  } else if (loanProgram === 'fha' && baseLoanAmount > fhaLimit) {
+    warnings.push(`Loan amount ($${new Intl.NumberFormat().format(baseLoanAmount)}) exceeds the 2026 standard FHA floor limit ($${new Intl.NumberFormat().format(fhaLimit)}). In standard-cost counties, the maximum insurable loan is capped at this floor.`);
+  }
+
   const firstMonth = schedule[0];
   const escrowMonthly = firstMonth ? roundToCents((firstMonth.taxes || 0) + (firstMonth.insurance || 0) + (firstMonth.pmi || 0) + (firstMonth.hoa || 0) + (firstMonth.other || 0)) : 0;
 
   return {
+    baseLoanAmount,
     loanAmount,
+    upfrontFee,
+    upfrontFeeName,
+    isUpfrontFeeFinanced,
+    totalPrepaidFinanceCharges,
+    amountFinanced,
     monthlyPI,
     totalMonthly: schedule[0]?.totalMonthly || 0,
     escrowMonthly,
     regulationZApr,
+    aprLabel,
+    hasFeesOrMi,
     totalInterest,
     totalPayment: totalLoanCost,
     totalPrincipalAndInterest: totalLoanCost,
@@ -1218,6 +1985,10 @@ export function calculateMortgage(input: MortgageInput) {
     isAccelerated,
     monthsSaved,
     yearsSaved,
+    pmiDropoffDate,
+    pmiDropoffMonth,
+    pmiEstimateLabel,
+    warnings,
     schedule,
     yearlySchedule: calendarYearSchedule,
     calendarYearSchedule,
@@ -1279,6 +2050,8 @@ export interface Debt {
   balance: number;
   rate: number;
   minPayment: number;
+  promoEndMonth?: number;
+  promoRate?: number;
 }
 
 export function calculateDebtPayoff(debts: Debt[], extraMonthly: number, strategy: 'snowball' | 'avalanche') {
@@ -1289,7 +2062,24 @@ export function calculateDebtPayoff(debts: Debt[], extraMonthly: number, strateg
     sortedDebts.sort((a, b) => b.rate - a.rate);
   }
 
-  const results = sortedDebts.map(d => ({ ...d, currentBalance: d.balance, paidOffMonth: 0 }));
+  const results = sortedDebts.map(d => {
+    const initialRate = (d.promoEndMonth && d.promoEndMonth > 0) ? (d.promoRate ?? 0) : d.rate;
+    const initialInterest = roundToCents((d.balance * initialRate) / 100 / 12);
+    let warning: string | undefined = undefined;
+    if (d.balance > 0 && d.minPayment <= initialInterest) {
+      warning = 'minimum payment does not cover interest';
+    }
+    return {
+      ...d,
+      currentBalance: roundToCents(d.balance),
+      paidOffMonth: null as number | null,
+      warning
+    };
+  });
+
+  const initialMinSum = results.reduce((sum, d) => sum + d.minPayment, 0);
+  const totalConstantBudget = roundToCents(initialMinSum + extraMonthly);
+
   const timeline = [];
   let month = 0;
   let totalPaid = 0;
@@ -1297,49 +2087,76 @@ export function calculateDebtPayoff(debts: Debt[], extraMonthly: number, strateg
 
   while (results.some(d => d.currentBalance > 0) && month < 600) {
     month++;
-    let availableExtra = extraMonthly;
     let monthlyInterest = 0;
 
-    // Apply min payments and collect interest
+    // 1. Apply interest before payment convention
     results.forEach(d => {
       if (d.currentBalance > 0) {
-        const interest = (d.currentBalance * (d.rate / 100)) / 12;
-        monthlyInterest += interest;
-        d.currentBalance += interest;
-        
-        const payment = Math.min(d.currentBalance, d.minPayment);
-        d.currentBalance -= payment;
-        totalPaid += payment;
-        if (d.currentBalance === 0 && d.paidOffMonth === 0) d.paidOffMonth = month;
+        const activeRate = (d.promoEndMonth && month <= d.promoEndMonth) ? (d.promoRate ?? 0) : d.rate;
+        const interest = roundToCents((d.currentBalance * activeRate) / 100 / 12);
+        monthlyInterest = roundToCents(monthlyInterest + interest);
+        d.currentBalance = roundToCents(d.currentBalance + interest);
+
+        if (!d.warning && d.minPayment <= interest && d.currentBalance > 0) {
+          d.warning = 'minimum payment does not cover interest';
+        }
       }
     });
 
-    // Apply extra to sorted focus debt
-    for (const d of results) {
+    totalInterest = roundToCents(totalInterest + monthlyInterest);
+
+    // 2. Pay minimums
+    let budgetUsed = 0;
+    results.forEach(d => {
       if (d.currentBalance > 0) {
-        const extra = Math.min(d.currentBalance, availableExtra);
-        d.currentBalance -= extra;
-        availableExtra -= extra;
-        totalPaid += extra;
-        if (d.currentBalance === 0 && d.paidOffMonth === 0) d.paidOffMonth = month;
-        if (availableExtra <= 0) break;
+        const payment = roundToCents(Math.min(d.currentBalance, d.minPayment));
+        d.currentBalance = roundToCents(d.currentBalance - payment);
+        totalPaid = roundToCents(totalPaid + payment);
+        budgetUsed = roundToCents(budgetUsed + payment);
+        if (d.currentBalance === 0 && d.paidOffMonth === null) {
+          d.paidOffMonth = month;
+        }
+      }
+    });
+
+    // 3. Allocate extra pool (extraMonthly + min payments of paid off debts)
+    let availableExtra = roundToCents(totalConstantBudget - budgetUsed);
+
+    for (const d of results) {
+      if (d.currentBalance > 0 && availableExtra > 0) {
+        const extraPay = roundToCents(Math.min(d.currentBalance, availableExtra));
+        d.currentBalance = roundToCents(d.currentBalance - extraPay);
+        availableExtra = roundToCents(availableExtra - extraPay);
+        totalPaid = roundToCents(totalPaid + extraPay);
+        budgetUsed = roundToCents(budgetUsed + extraPay);
+        if (d.currentBalance === 0 && d.paidOffMonth === null) {
+          d.paidOffMonth = month;
+        }
       }
     }
 
-    totalInterest += monthlyInterest;
+    const currentTotalBalance = roundToCents(results.reduce((sum, d) => sum + d.currentBalance, 0));
     timeline.push({
       month,
-      totalBalance: results.reduce((sum, d) => sum + d.currentBalance, 0),
+      totalBalance: currentTotalBalance,
       totalPaid,
       totalInterest
     });
+
+    if (currentTotalBalance <= 0) {
+      break;
+    }
   }
 
+  const status = results.some(d => d.currentBalance > 0) ? 'NEVER_PAID_OFF' : 'SUCCESS';
+
   return {
+    status,
     monthsToPayoff: month,
     totalInterest,
     totalPaid,
-    timeline: timeline.filter((_, i) => i % 6 === 0 || i === month - 1)
+    debts: results,
+    timeline: timeline.filter((_, i) => i % 6 === 0 || i === month - 1 || i === 0)
   };
 }
 
@@ -1353,29 +2170,102 @@ export interface RetirementInput {
   monthlyContribution: number;
   annualExpenses: number;
   annualReturn: number;
-  safeWithdrawalRate?: number; // e.g. 4 for 4% (default 4% per standard Trinity Study)
+  inflationRate?: number; // default 2.5%
+  returnMode?: 'real' | 'nominal'; // default 'real'
+  safeWithdrawalRate?: number; // default 4%
+  horizonYears?: number; // default 30
+  year?: number;
+  filingStatus?: 'single' | 'mfj' | 'mfs' | 'hoh';
+  stateCode?: string;
   adjustForTaxes?: boolean;
-  retirementTaxRatePercent?: number; // e.g. 15 for 15% ordinary income tax
+  useBracketTaxes?: boolean;
+  retirementTaxRatePercent?: number; // flat override
+  capitalGainsTaxDrag?: number; // e.g. 0.5% drag on excess
 }
 
 export function calculateRetirement(input: RetirementInput) {
   const swr = input.safeWithdrawalRate && input.safeWithdrawalRate > 0 ? input.safeWithdrawalRate : 4;
-  const taxRate = (input.adjustForTaxes && input.retirementTaxRatePercent) 
-    ? Math.min(50, Math.max(0, input.retirementTaxRatePercent)) / 100 
-    : 0;
-  
-  // Gross annual withdrawal needed to cover net living expenses after retirement income taxes
-  const grossAnnualExpenses = taxRate > 0 && taxRate < 1 
-    ? roundToCents(input.annualExpenses / (1 - taxRate))
-    : input.annualExpenses;
+  const inflation = input.inflationRate !== undefined ? input.inflationRate : 2.5;
+  const returnMode = input.returnMode || 'real';
+  const horizon = input.horizonYears !== undefined ? input.horizonYears : 30;
+  const year = input.year ?? DEFAULT_TAX_YEAR;
+
+  // 1. Validate contributions against annual tax-advantaged limits
+  const taxConfig = US_TAX_CONFIG_BY_YEAR[year] || US_TAX_CONFIG_BY_YEAR[2026];
+  const limits = taxConfig.retirementLimits;
+  const base401k = limits?.elective401kLimit?.value || 24500;
+  const catchUp50 = limits?.catchUp401kAge50?.value || 7500;
+  const specialCatchUp60_63 = limits?.catchUp401kSpecialAge60_63?.value || 11250;
+  const iraLimit = limits?.iraContributionLimit?.value || 7000;
+  const iraCatchUp = limits?.iraCatchUpAge50?.value || 1000;
+  const hsaLimit = limits?.hsaSingleLimit?.value || 4300;
+
+  const age = input.currentAge;
+  const max401k = base401k + (age >= 60 && age <= 63 ? specialCatchUp60_63 : age >= 50 ? catchUp50 : 0);
+  const maxIra = iraLimit + (age >= 50 ? iraCatchUp : 0);
+  const maxHsa = hsaLimit;
+  const totalAnnualLimit = max401k + maxIra + maxHsa;
+  const maxMonthlyLimit = totalAnnualLimit / 12;
+
+  const isOverLimit = input.monthlyContribution > maxMonthlyLimit;
+  const excessMonthly = isOverLimit ? input.monthlyContribution - maxMonthlyLimit : 0;
+  const taxAdvantagedMonthly = isOverLimit ? maxMonthlyLimit : input.monthlyContribution;
+
+  const contributionWarning = isOverLimit
+    ? `Warning: Monthly contribution ($${Math.round(input.monthlyContribution).toLocaleString()}) exceeds combined tax-advantaged limits ($${Math.round(maxMonthlyLimit).toLocaleString()}/mo) for age ${age} in ${year}. Excess ($${Math.round(excessMonthly).toLocaleString()}/mo) flows to a taxable brokerage account.`
+    : null;
+
+  // 2. Taxes (Bracket-based vs Flat)
+  let grossAnnualExpenses = input.annualExpenses;
+  let taxRatePercent = 0;
+
+  if (input.useBracketTaxes) {
+    const filingStatus = input.filingStatus || 'single';
+    const stateCode = (input.stateCode || 'CA').toUpperCase();
+    let guessGross = input.annualExpenses / 0.85;
+    for (let i = 0; i < 5; i++) {
+      const ct = calculateComprehensiveTax({ annualIncome: Math.max(0, guessGross), year, filingStatus, stateCode });
+      const net = ct.netTakeHome;
+      const diff = net - input.annualExpenses;
+      if (Math.abs(diff) < 1) break;
+      guessGross -= diff;
+    }
+    const finalCt = calculateComprehensiveTax({ annualIncome: Math.max(0, guessGross), year, filingStatus, stateCode });
+    grossAnnualExpenses = finalCt.grossSalary;
+    taxRatePercent = finalCt.totalEffectiveTaxRate;
+  } else if (input.adjustForTaxes && input.retirementTaxRatePercent !== undefined) {
+    const flatRate = Math.min(50, Math.max(0, input.retirementTaxRatePercent)) / 100;
+    taxRatePercent = input.retirementTaxRatePercent;
+    grossAnnualExpenses = flatRate > 0 && flatRate < 1 
+      ? roundToCents(input.annualExpenses / (1 - flatRate))
+      : input.annualExpenses;
+  }
 
   const targetNetWorth = roundToCents(grossAnnualExpenses / (swr / 100));
   const standardTargetNetWorth = roundToCents(input.annualExpenses / (swr / 100));
-  const monthlyRate = input.annualReturn / 100 / 12;
-  
+
+  // 3. Return & Inflation (Real vs Nominal)
+  const nominalReturn = input.annualReturn;
+  let effectiveAnnualReturn = nominalReturn;
+  if (returnMode === 'real') {
+    const realR = ((1 + nominalReturn / 100) / (1 + inflation / 100)) - 1;
+    effectiveAnnualReturn = realR * 100;
+  }
+
+  const cgDrag = input.capitalGainsTaxDrag || 0;
+  if (excessMonthly > 0 && cgDrag > 0) {
+    effectiveAnnualReturn -= (cgDrag * (excessMonthly / input.monthlyContribution));
+  }
+
+  const monthlyRate = effectiveAnnualReturn / 100 / 12;
+
   let balance = input.currentSavings;
   let months = 0;
-  const timeline = [];
+  const timeline = [{
+    age: input.currentAge,
+    balance: roundToCents(input.currentSavings),
+    target: targetNetWorth
+  }];
 
   while (balance < targetNetWorth && months < 1200) {
     months++;
@@ -1383,30 +2273,127 @@ export function calculateRetirement(input: RetirementInput) {
     
     if (months % 12 === 0) {
       timeline.push({
-        age: input.currentAge + (months / 12),
+        age: Number((input.currentAge + (months / 12)).toFixed(1)),
         balance: roundToCents(balance),
         target: targetNetWorth
       });
     }
   }
 
+  if (months % 12 !== 0) {
+    timeline.push({
+      age: Number((input.currentAge + (months / 12)).toFixed(1)),
+      balance: roundToCents(balance),
+      target: targetNetWorth
+    });
+  }
+
+  const horizonWarning = horizon > 40
+    ? `Warning: Planning horizon of ${horizon} years exceeds the standard 30-year Trinity Study scope, carrying heightened sequence-of-returns risk.`
+    : null;
+
+  const earlyWithdrawalNote = "Early-Withdrawal Rule: Traditional 401(k) / IRA withdrawals prior to age 59½ are subject to ordinary income tax plus a 10% IRS early-withdrawal penalty, unless an exception applies (e.g., Rule 72(t) SEPP, permanent disability, medical expenses above 7.5% AGI, or Roth contribution basis withdrawals).";
+  const rmdSocialSecurityNote = "Social Security benefits and Required Minimum Distributions (RMDs starting at age 73/75) are optional inputs and otherwise not modeled in this accumulation engine.";
+
   return {
     targetNetWorth,
     standardTargetNetWorth,
     grossAnnualExpenses,
-    taxRatePercent: taxRate * 100,
+    taxRatePercent,
     yearsToFIRE: months / 12,
     fireAge: input.currentAge + (months / 12),
     finalBalance: roundToCents(balance),
-    timeline
+    timeline,
+    effectiveAnnualReturn,
+    inflationRate: inflation,
+    returnMode,
+    maxMonthlyLimit,
+    isOverLimit,
+    contributionWarning,
+    horizonWarning,
+    earlyWithdrawalNote,
+    rmdSocialSecurityNote
   };
 }
 
 export function evaluateExpression(expression: string, context: Record<string, number> = {}): number {
-  // Simple evaluator fallback for legacy scientific needs
+  // Safe arithmetic parser supporting +, -, *, /, parentheses, numbers, and variables
   try {
-    const sanitized = expression.replace(/[^-()\d/*+.]/g, '');
-    return eval(sanitized);
+    const clean = expression.replace(/\s+/g, '');
+    let pos = 0;
+
+    function parsePrimary(): number {
+      if (pos >= clean.length) return 0;
+      if (clean[pos] === '(') {
+        pos++; // consume '('
+        const val = parseAddSub();
+        if (clean[pos] === ')') pos++; // consume ')'
+        return val;
+      }
+      if (clean[pos] === '+') {
+        pos++;
+        return parsePrimary();
+      }
+      if (clean[pos] === '-') {
+        pos++;
+        return -parsePrimary();
+      }
+      // Number
+      let start = pos;
+      while (pos < clean.length && ((clean[pos] >= '0' && clean[pos] <= '9') || clean[pos] === '.')) {
+        pos++;
+      }
+      if (pos > start) {
+        const numStr = clean.substring(start, pos);
+        const num = parseFloat(numStr);
+        return isNaN(num) ? 0 : num;
+      }
+      // Variable name
+      start = pos;
+      while (pos < clean.length && ((clean[pos] >= 'a' && clean[pos] <= 'z') || (clean[pos] >= 'A' && clean[pos] <= 'Z') || clean[pos] === '_')) {
+        pos++;
+      }
+      if (pos > start) {
+        const varName = clean.substring(start, pos);
+        return context[varName] !== undefined ? context[varName] : 0;
+      }
+      return 0;
+    }
+
+    function parseMulDiv(): number {
+      let val = parsePrimary();
+      while (pos < clean.length) {
+        if (clean[pos] === '*') {
+          pos++;
+          val *= parsePrimary();
+        } else if (clean[pos] === '/') {
+          pos++;
+          const divisor = parsePrimary();
+          val = divisor === 0 ? 0 : val / divisor;
+        } else {
+          break;
+        }
+      }
+      return val;
+    }
+
+    function parseAddSub(): number {
+      let val = parseMulDiv();
+      while (pos < clean.length) {
+        if (clean[pos] === '+') {
+          pos++;
+          val += parseMulDiv();
+        } else if (clean[pos] === '-') {
+          pos++;
+          val -= parseMulDiv();
+        } else {
+          break;
+        }
+      }
+      return val;
+    }
+
+    return parseAddSub();
   } catch {
     return 0;
   }

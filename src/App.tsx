@@ -26,7 +26,8 @@ import {
   calculateInvestment, 
   calculateDebtPayoff, 
   calculateRetirement, 
-  type Debt 
+  type Debt,
+  US_MORTGAGE_CONFIG_2026
 } from './engine';
 import { 
   GlassCard, 
@@ -38,6 +39,7 @@ import {
   AutoLoanModule,
   InterestCalculatorModule,
   PaymentCalculatorModule,
+  RetirementModule,
   AmortizationModule,
   InflationModule,
   FinanceTVMModule,
@@ -45,7 +47,8 @@ import {
   CompoundInterestModule,
   SalaryModule,
   InterestRateModule,
-  SalesTaxModule
+  SalesTaxModule,
+  CalculatorDisclaimer
 } from './CalculatorModules';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -171,85 +174,179 @@ function CalculatorSubNav({ currentId, onNavigate }: { currentId: string; onNavi
 
 // --- Mortgage Module ---
 function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: (id: string) => void }) {
-  const [startDate, setStartDate] = useState('2026-10');
-  const [loanType, setLoanType] = useState<'30-fixed' | '15-fixed' | 'fha' | 'va' | 'arm'>('30-fixed');
-  
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+
+  const [loanProgram, setLoanProgram] = useState<'conventional' | 'fha' | 'va' | 'usda'>('conventional');
+  const [presetId, setPresetId] = useState<'30-fixed' | '15-fixed' | 'fha' | 'va' | 'usda'>('30-fixed');
+
+  // Exact 2-decimal down payment percentage
+  const [downPercent, setDownPercent] = useState<number>(20.0);
+
   const [params, setParams] = useState({ 
     homePrice: 400000, 
     downPayment: 80000, 
-    rate: 7.456, 
+    rate: US_MORTGAGE_CONFIG_2026.sampleRates.fixed30, 
     term: 30, 
+    // Assessed value for taxes
+    assessedValue: 0,
     taxPercent: 1.2, 
     insAnnual: 1200,
-    pmiAnnual: 0,
+    pmiAnnual: '' as string | number, // explicit override; empty string means use engine program default
     hoaAnnual: 0,
     otherAnnual: 0,
     taxInc: 0,
     insInc: 0,
     hoaInc: 0,
     otherInc: 0,
+    // Prepaid finance charges & APR
+    pointsPercent: 0,
+    originationFee: 0,
+    otherPrepaidFinanceCharges: 0,
+    // Program specifics
+    requestPmiCancellation80: true,
+    vaIsSubsequentUse: false,
+    vaIsExempt: false,
+    upfrontFeeFinanced: true,
+    // Extra payments
     extraMonthly: 0,
     extraYearly: 0,
+    extraYearlyMonth: 0, // 0 = unselected (not applied per Req 13), 1-12 = month chosen
     extraOneTime: 0,
     extraOneTimeMonth: 1
   });
 
-  const [activeSubTab, setActiveSubTab] = useState<'setup' | 'costs' | 'extra'>('setup');
+  const [activeSubTab, setActiveSubTab] = useState<'setup' | 'costs' | 'fees-apr' | 'extra'>('setup');
   const [scheduleView, setScheduleView] = useState<'yearly' | 'monthly'>('yearly');
   const [faqOpen, setFaqOpen] = useState<number | null>(null);
   const downPercentId = useId();
 
-  // Handle Loan Program Presets
-  const handleLoanTypeSelect = (type: '30-fixed' | '15-fixed' | 'fha' | 'va' | 'arm') => {
-    setLoanType(type);
-    if (type === '30-fixed') {
-      setParams(p => ({ ...p, term: 30, rate: 7.456, downPayment: Math.round(p.homePrice * 0.2) }));
-    } else if (type === '15-fixed') {
-      setParams(p => ({ ...p, term: 15, rate: 6.75, downPayment: Math.round(p.homePrice * 0.2) }));
-    } else if (type === 'fha') {
-      setParams(p => ({ ...p, term: 30, rate: 7.125, downPayment: Math.round(p.homePrice * 0.035), pmiAnnual: Math.round(p.homePrice * 0.965 * 0.0055) }));
-    } else if (type === 'va') {
-      setParams(p => ({ ...p, term: 30, rate: 6.875, downPayment: 0, pmiAnnual: 0 }));
-    } else if (type === 'arm') {
-      setParams(p => ({ ...p, term: 30, rate: 6.45, downPayment: Math.round(p.homePrice * 0.2) }));
+  // Handle Preset selection with rates sourced from config
+  const handlePresetSelect = (id: '30-fixed' | '15-fixed' | 'fha' | 'va' | 'usda') => {
+    setPresetId(id);
+    if (id === '30-fixed') {
+      setLoanProgram('conventional');
+      setDownPercent(20.0);
+      setParams(p => ({
+        ...p,
+        term: 30,
+        rate: US_MORTGAGE_CONFIG_2026.sampleRates.fixed30,
+        downPayment: Math.round(p.homePrice * 0.20 * 100) / 100,
+        pmiAnnual: ''
+      }));
+    } else if (id === '15-fixed') {
+      setLoanProgram('conventional');
+      setDownPercent(20.0);
+      setParams(p => ({
+        ...p,
+        term: 15,
+        rate: US_MORTGAGE_CONFIG_2026.sampleRates.fixed15,
+        downPayment: Math.round(p.homePrice * 0.20 * 100) / 100,
+        pmiAnnual: ''
+      }));
+    } else if (id === 'fha') {
+      setLoanProgram('fha');
+      setDownPercent(3.5);
+      setParams(p => ({
+        ...p,
+        term: 30,
+        rate: US_MORTGAGE_CONFIG_2026.sampleRates.fha30,
+        downPayment: Math.round(p.homePrice * 0.035 * 100) / 100,
+        pmiAnnual: ''
+      }));
+    } else if (id === 'va') {
+      setLoanProgram('va');
+      setDownPercent(0.0);
+      setParams(p => ({
+        ...p,
+        term: 30,
+        rate: US_MORTGAGE_CONFIG_2026.sampleRates.va30,
+        downPayment: 0,
+        pmiAnnual: ''
+      }));
+    } else if (id === 'usda') {
+      setLoanProgram('usda');
+      setDownPercent(0.0);
+      setParams(p => ({
+        ...p,
+        term: 30,
+        rate: US_MORTGAGE_CONFIG_2026.sampleRates.usda30,
+        downPayment: 0,
+        pmiAnnual: ''
+      }));
     }
   };
 
-  const downPercent = useMemo(() => {
-    return Math.round((params.downPayment / (params.homePrice || 1)) * 100);
-  }, [params.downPayment, params.homePrice]);
+  // Changing home price preserves exact two-decimal down payment percentage
+  const handleHomePriceChange = (newPrice: number) => {
+    const validPrice = Math.max(0, newPrice);
+    const newDown = Math.round(validPrice * (downPercent / 100) * 100) / 100;
+    setParams(p => ({
+      ...p,
+      homePrice: validPrice,
+      downPayment: newDown
+    }));
+  };
 
-  // Auto-PMI determination: if down payment < 20% and pmiAnnual not manually set
-  const effectivePmiAnnual = useMemo(() => {
-    if (params.pmiAnnual > 0) return params.pmiAnnual;
-    if (loanType === 'va') return 0;
-    if (downPercent < 20) {
-      const loanAmount = Math.max(0, params.homePrice - params.downPayment);
-      return Math.round(loanAmount * 0.0075); // Standard ~0.75% PMI
-    }
-    return 0;
-  }, [params.pmiAnnual, params.homePrice, params.downPayment, downPercent, loanType]);
+  // Changing down payment in dollars updates exact two-decimal percentage
+  const handleDownPaymentChange = (newDown: number) => {
+    const validDown = Math.max(0, newDown);
+    const pct = params.homePrice > 0 ? Number(((validDown / params.homePrice) * 100).toFixed(2)) : 0;
+    setDownPercent(pct);
+    setParams(p => ({
+      ...p,
+      downPayment: validDown
+    }));
+  };
+
+  // Changing down payment percentage updates dollars
+  const handleDownPercentChange = (newPct: number) => {
+    const validPct = Math.max(0, Math.min(100, newPct));
+    setDownPercent(validPct);
+    const newDown = Math.round(params.homePrice * (validPct / 100) * 100) / 100;
+    setParams(p => ({
+      ...p,
+      downPayment: newDown
+    }));
+  };
+
+  // LTV & PMI trigger (LTV > 80%)
+  const originalLtv = params.homePrice > 0 ? ((params.homePrice - params.downPayment) / params.homePrice) * 100 : 0;
+  const isLtvOver80 = originalLtv > 80;
 
   const res = useMemo(() => calculateMortgage({ 
+    loanProgram,
     homePrice: params.homePrice,
     downPayment: params.downPayment,
     annualRate: params.rate,
     termYears: params.term,
-    startDate: startDate,
+    startDate,
+    assessedValue: params.assessedValue > 0 ? params.assessedValue : undefined,
     taxPercent: params.taxPercent,
     insuranceAnnual: params.insAnnual,
-    pmiAnnual: effectivePmiAnnual,
+    pmiAnnual: params.pmiAnnual !== '' ? Number(params.pmiAnnual) : undefined,
     hoaAnnual: params.hoaAnnual,
     otherAnnual: params.otherAnnual,
     taxIncrease: params.taxInc,
     insuranceIncrease: params.insInc,
     hoaIncrease: params.hoaInc,
     otherIncrease: params.otherInc,
+    pointsPercent: params.pointsPercent,
+    originationFee: params.originationFee,
+    otherPrepaidFinanceCharges: params.otherPrepaidFinanceCharges,
+    requestPmiCancellation80: params.requestPmiCancellation80,
+    vaIsSubsequentUse: params.vaIsSubsequentUse,
+    vaIsExempt: params.vaIsExempt,
+    upfrontFeeFinanced: params.upfrontFeeFinanced,
     extraMonthly: params.extraMonthly,
     extraYearly: params.extraYearly,
+    extraYearlyMonth: params.extraYearlyMonth > 0 ? params.extraYearlyMonth : undefined,
     extraOneTime: params.extraOneTime,
     extraOneTimeMonth: params.extraOneTimeMonth
-  }), [startDate, params, effectivePmiAnnual]);
+  }), [startDate, loanProgram, params]);
 
   const format = (v: number) => `${currency.symbol}${new Intl.NumberFormat().format(Math.round(v))}`;
   const formatDetailed = (v: number) => `${currency.symbol}${new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)}`;
@@ -284,7 +381,7 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
     { name: 'P&I', value: res.monthlyPI, color: '#3b82f6' },
     { name: 'Taxes', value: res.schedule[0]?.taxes || 0, color: '#f43f5e' },
     { name: 'Ins', value: res.schedule[0]?.insurance || 0, color: '#10b981' },
-    ...(res.schedule[0]?.pmi > 0 ? [{ name: 'PMI', value: res.schedule[0].pmi, color: '#8b5cf6' }] : []),
+    ...(res.schedule[0]?.pmi > 0 ? [{ name: 'PMI/MIP', value: res.schedule[0].pmi, color: '#8b5cf6' }] : []),
     ...(res.schedule[0]?.hoa > 0 ? [{ name: 'HOA', value: res.schedule[0].hoa, color: '#f59e0b' }] : []),
     ...(res.schedule[0]?.other > 0 ? [{ name: 'Other', value: res.schedule[0].other, color: '#94a3b8' }] : []),
   ];
@@ -308,31 +405,31 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
         {/* Left Column: Interactive Inputs & Accordions */}
         <div className="lg:col-span-5 space-y-6">
           <GlassCard className="p-0 overflow-hidden shadow-md">
-            {/* Loan Program Quick Presets (Horizontal scroll on mobile, grid on desktop) */}
-            <div className="p-3.5 sm:p-4 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700">
-              <div className="flex items-center justify-between mb-2">
+            {/* Loan Program Quick Presets */}
+            <div className="p-3.5 sm:p-4 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 space-y-2">
+              <div className="flex items-center justify-between">
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
                   Loan Program Preset
                 </span>
-                <span className="text-xs font-mono text-indigo-600 dark:text-indigo-400 font-bold">
-                  {loanType.toUpperCase()}
+                <span className="text-xs font-mono text-indigo-600 dark:text-indigo-400 font-bold uppercase">
+                  {loanProgram}
                 </span>
               </div>
               <div className="flex overflow-x-auto no-scrollbar gap-1.5 pb-0.5 sm:grid sm:grid-cols-5">
                 {[
-                  { id: '30-fixed', label: '30Y Fixed' },
-                  { id: '15-fixed', label: '15Y Fixed' },
+                  { id: '30-fixed', label: '30Y Conv' },
+                  { id: '15-fixed', label: '15Y Conv' },
                   { id: 'fha', label: 'FHA 3.5%' },
                   { id: 'va', label: 'VA 0%' },
-                  { id: 'arm', label: '5/1 ARM' },
+                  { id: 'usda', label: 'USDA 0%' },
                 ].map((item) => (
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => handleLoanTypeSelect(item.id as any)}
+                    onClick={() => handlePresetSelect(item.id as any)}
                     className={cn(
                       "min-h-[38px] px-3 sm:px-1 py-2 text-xs font-bold rounded-xl text-center shrink-0 sm:shrink transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 whitespace-nowrap sm:whitespace-normal",
-                      loanType === item.id
+                      presetId === item.id
                         ? "bg-indigo-600 text-white shadow-sm font-black"
                         : "bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-600 border border-slate-200 dark:border-slate-600"
                     )}
@@ -341,11 +438,15 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
                   </button>
                 ))}
               </div>
+              <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                <Info size={13} className="shrink-0" />
+                <span>Preset rates: sample market rates (update regularly or enter custom rate).</span>
+              </div>
             </div>
 
             {/* Input Category Tabs */}
             <div className="flex border-b border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800" role="tablist" aria-label="Mortgage inputs view">
-              {(['setup', 'costs', 'extra'] as const).map(t => (
+              {(['setup', 'costs', 'fees-apr', 'extra'] as const).map(t => (
                 <button
                   key={t}
                   type="button"
@@ -353,13 +454,13 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
                   aria-selected={activeSubTab === t}
                   onClick={() => setActiveSubTab(t)}
                   className={cn(
-                    "flex-1 min-h-[48px] py-3 text-xs font-bold uppercase tracking-wider transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500",
+                    "flex-1 min-h-[44px] py-2.5 text-xs font-bold uppercase tracking-wider transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500",
                     activeSubTab === t 
                       ? "bg-white dark:bg-[#1e293b] text-blue-700 dark:text-blue-300 border-b-2 border-blue-600 dark:border-blue-400 font-black" 
                       : "text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
                   )}
                 >
-                  {t === 'setup' ? 'Core Loan' : t === 'costs' ? 'Taxes & Escrow' : 'Extra Prepay'}
+                  {t === 'setup' ? 'Core Loan' : t === 'costs' ? 'Taxes & Escrow' : t === 'fees-apr' ? 'APR / Fees' : 'Extra Prepay'}
                 </button>
               ))}
             </div>
@@ -367,11 +468,35 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
             <div className="p-4 sm:p-6 space-y-5 sm:space-y-6">
               {activeSubTab === 'setup' && (
                 <div className="space-y-5 sm:space-y-6">
+                  {/* Loan Program Selector */}
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+                      Loan Program
+                    </label>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {(['conventional', 'fha', 'va', 'usda'] as const).map(prog => (
+                        <button
+                          key={prog}
+                          type="button"
+                          onClick={() => setLoanProgram(prog)}
+                          className={cn(
+                            "py-2 px-3 text-xs font-bold rounded-xl border transition-all uppercase tracking-wide",
+                            loanProgram === prog
+                              ? "bg-blue-600 text-white border-blue-600 font-black shadow-sm"
+                              : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-600 hover:bg-slate-200"
+                          )}
+                        >
+                          {prog}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <InputGroup 
                     label="Home Purchase Price" 
                     value={params.homePrice} 
                     prefix={currency.symbol} 
-                    onChange={(v: number) => setParams(p => ({ ...p, homePrice: v, downPayment: Math.round(v * (downPercent / 100)) }))} 
+                    onChange={handleHomePriceChange} 
                   />
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -379,14 +504,14 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
                       label="Down Payment ($)" 
                       value={params.downPayment} 
                       prefix={currency.symbol} 
-                      onChange={(v: number) => setParams(p => ({ ...p, downPayment: v }))} 
+                      onChange={handleDownPaymentChange} 
                     />
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between ml-1">
                         <label htmlFor={downPercentId} className="block text-xs font-bold text-slate-800 dark:text-slate-200">Down %</label>
-                        {downPercent < 20 && (
+                        {isLtvOver80 && loanProgram === 'conventional' && (
                           <span className="text-xs font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 px-2 py-0.5 rounded border border-amber-200 dark:border-amber-800">
-                            PMI Required
+                            PMI Required (&gt;80% LTV)
                           </span>
                         )}
                       </div>
@@ -396,11 +521,9 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
                           type="number"
                           min="0"
                           max="100"
+                          step="0.01"
                           value={downPercent}
-                          onChange={(e) => {
-                            const pct = Number(e.target.value);
-                            setParams(p => ({ ...p, downPayment: Math.round((pct / 100) * p.homePrice) }));
-                          }}
+                          onChange={(e) => handleDownPercentChange(Number(e.target.value))}
                           className="w-full min-h-[44px] bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-xl sm:rounded-2xl py-2.5 sm:py-3 px-4 outline-none text-slate-900 dark:text-white text-base sm:text-sm font-bold pr-10 focus-visible:ring-2 focus-visible:ring-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                         />
                         <div aria-hidden="true" className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-600 dark:text-slate-400 font-bold text-xs">%</div>
@@ -408,9 +531,132 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
                     </div>
                   </div>
 
+                  {/* Program-Specific Options */}
+                  {loanProgram === 'conventional' && isLtvOver80 && (
+                    <div className="p-3.5 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-xl space-y-2">
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="req-pmi-cancel"
+                          type="checkbox"
+                          checked={params.requestPmiCancellation80}
+                          onChange={(e) => setParams(p => ({ ...p, requestPmiCancellation80: e.target.checked }))}
+                          className="h-4 w-4 rounded text-blue-600 focus:ring-blue-500"
+                        />
+                        <label htmlFor="req-pmi-cancel" className="text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer">
+                          I request PMI cancellation at 80% LTV of original value
+                        </label>
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-normal">
+                        Under the Homeowners Protection Act (HPA 1998), cancellation occurs at the first of: (a) borrower request at 80% LTV, (b) automatic termination at 78% original scheduled balance, or (c) term midpoint.
+                      </p>
+                    </div>
+                  )}
+
+                  {loanProgram === 'fha' && (
+                    <div className="p-3.5 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 rounded-xl space-y-2.5">
+                      <div className="flex items-center justify-between text-xs font-bold text-indigo-950 dark:text-indigo-200">
+                        <span>FHA Upfront MIP (1.75%):</span>
+                        <span className="font-mono">{format(res.upfrontFee)}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="fha-finance-fee"
+                          type="checkbox"
+                          checked={params.upfrontFeeFinanced}
+                          onChange={(e) => setParams(p => ({ ...p, upfrontFeeFinanced: e.target.checked }))}
+                          className="h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <label htmlFor="fha-finance-fee" className="text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
+                          Finance Upfront MIP into Loan Balance (adds to financed principal)
+                        </label>
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-normal">
+                        Per HUD ML 2023-05: Annual MIP does not cancel at 80% LTV. It lasts 11 years for initial LTV ≤ 90%, or the entire loan life for LTV &gt; 90%.
+                      </p>
+                    </div>
+                  )}
+
+                  {loanProgram === 'va' && (
+                    <div className="p-3.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl space-y-2.5">
+                      <div className="flex items-center justify-between text-xs font-bold text-emerald-950 dark:text-emerald-200">
+                        <span>VA Funding Fee:</span>
+                        <span className="font-mono">{params.vaIsExempt ? 'Exempt ($0)' : format(res.upfrontFee)}</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <input
+                            id="va-exempt"
+                            type="checkbox"
+                            checked={params.vaIsExempt}
+                            onChange={(e) => setParams(p => ({ ...p, vaIsExempt: e.target.checked }))}
+                            className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500"
+                          />
+                          <label htmlFor="va-exempt" className="text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
+                            Exempt (service-connected disability)
+                          </label>
+                        </div>
+                        {!params.vaIsExempt && (
+                          <div className="flex items-center gap-2">
+                            <input
+                              id="va-subsequent"
+                              type="checkbox"
+                              checked={params.vaIsSubsequentUse}
+                              onChange={(e) => setParams(p => ({ ...p, vaIsSubsequentUse: e.target.checked }))}
+                              className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500"
+                            />
+                            <label htmlFor="va-subsequent" className="text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
+                              Subsequent VA loan use (3.30% fee if &lt;5% down)
+                            </label>
+                          </div>
+                        )}
+                        {!params.vaIsExempt && (
+                          <div className="flex items-center gap-2">
+                            <input
+                              id="va-finance-fee"
+                              type="checkbox"
+                              checked={params.upfrontFeeFinanced}
+                              onChange={(e) => setParams(p => ({ ...p, upfrontFeeFinanced: e.target.checked }))}
+                              className="h-4 w-4 rounded text-emerald-600 focus:ring-emerald-500"
+                            />
+                            <label htmlFor="va-finance-fee" className="text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
+                              Finance Funding Fee into Loan Amount
+                            </label>
+                          </div>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-emerald-800 dark:text-emerald-300 font-medium">
+                        ✓ VA loans carry $0 monthly mortgage insurance.
+                      </p>
+                    </div>
+                  )}
+
+                  {loanProgram === 'usda' && (
+                    <div className="p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl space-y-2.5">
+                      <div className="flex items-center justify-between text-xs font-bold text-amber-950 dark:text-amber-200">
+                        <span>USDA Upfront Guarantee Fee (1.00%):</span>
+                        <span className="font-mono">{format(res.upfrontFee)}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="usda-finance-fee"
+                          type="checkbox"
+                          checked={params.upfrontFeeFinanced}
+                          onChange={(e) => setParams(p => ({ ...p, upfrontFeeFinanced: e.target.checked }))}
+                          className="h-4 w-4 rounded text-amber-600 focus:ring-amber-500"
+                        />
+                        <label htmlFor="usda-finance-fee" className="text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
+                          Finance Guarantee Fee into Loan Amount
+                        </label>
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                        USDA loans charge a 0.35% annual fee billed monthly for the loan term.
+                      </p>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <InputGroup 
-                      label="Interest Rate" 
+                      label="Interest Note Rate" 
                       value={params.rate} 
                       suffix="%" 
                       step="0.001" 
@@ -461,28 +707,52 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <InputGroup label="Property Tax Rate" value={params.taxPercent} suffix="%" step="0.1" onChange={(v: number) => setParams(p => ({ ...p, taxPercent: v }))} />
-                    <InputGroup label="Homeowners Ins. / Yr" value={params.insAnnual} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, insAnnual: v }))} />
+                    <div className="space-y-1">
+                      <InputGroup 
+                        label="Property Tax Rate" 
+                        value={params.taxPercent} 
+                        suffix="%" 
+                        step="0.05" 
+                        onChange={(v: number) => setParams(p => ({ ...p, taxPercent: v }))} 
+                      />
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                        Estimated on purchase price by default.
+                      </span>
+                    </div>
+                    <InputGroup 
+                      label="Assessed Value (Optional)" 
+                      value={params.assessedValue} 
+                      prefix={currency.symbol} 
+                      onChange={(v: number) => setParams(p => ({ ...p, assessedValue: v }))} 
+                    />
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <InputGroup label="Homeowners Ins. / Yr" value={params.insAnnual} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, insAnnual: v }))} />
                     <div className="space-y-1">
                       <InputGroup 
-                        label="PMI Annual" 
-                        value={params.pmiAnnual || (effectivePmiAnnual > 0 ? effectivePmiAnnual : 0)} 
+                        label="PMI / MIP Annual ($)" 
+                        value={params.pmiAnnual !== '' ? Number(params.pmiAnnual) : (res.schedule[0]?.pmi ? res.schedule[0].pmi * 12 : 0)} 
                         prefix={currency.symbol} 
                         onChange={(v: number) => setParams(p => ({ ...p, pmiAnnual: v }))} 
                       />
-                      {downPercent < 20 && params.pmiAnnual === 0 && (
+                      {params.pmiAnnual === '' && res.pmiEstimateLabel && (
+                        <span className="text-xs text-amber-700 dark:text-amber-400 italic block">
+                          Assumption ({res.pmiEstimateLabel}): {format(res.schedule[0]?.pmi ? res.schedule[0].pmi * 12 : 0)}/yr
+                        </span>
+                      )}
+                      {params.pmiAnnual === 0 && (
                         <span className="text-xs text-slate-500 dark:text-slate-400 italic block">
-                          Auto-estimated at ~0.75% of loan ({format(effectivePmiAnnual)}/yr)
+                          Explicitly set to $0 by user.
                         </span>
                       )}
                     </div>
-                    <InputGroup label="HOA Dues / Yr" value={params.hoaAnnual} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, hoaAnnual: v }))} />
                   </div>
 
-                  <InputGroup label="Other Annual Costs" value={params.otherAnnual} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, otherAnnual: v }))} />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <InputGroup label="HOA Dues / Yr" value={params.hoaAnnual} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, hoaAnnual: v }))} />
+                    <InputGroup label="Other Annual Costs" value={params.otherAnnual} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, otherAnnual: v }))} />
+                  </div>
                   
                   <div className="pt-4 border-t border-slate-200 dark:border-slate-700 space-y-4">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Annual Escalation %</h4>
@@ -498,6 +768,71 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
                 </div>
               )}
 
+              {activeSubTab === 'fees-apr' && (
+                <div className="space-y-5 sm:space-y-6">
+                  <div className="p-3.5 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-xl text-xs text-blue-900 dark:text-blue-200 leading-relaxed">
+                    <strong>Prepaid Finance Charges &amp; APR (TILA / Regulation Z):</strong>
+                    <p className="mt-1">
+                      Under 12 CFR Part 1026 (Regulation Z), the Annual Percentage Rate reflects the true cost of credit by deducting prepaid finance charges (discount points, origination fees) from the amount financed, and incorporating ongoing mortgage insurance premiums.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <InputGroup 
+                      label="Discount Points (% of loan)" 
+                      value={params.pointsPercent} 
+                      suffix="%" 
+                      step="0.125" 
+                      onChange={(v: number) => setParams(p => ({ ...p, pointsPercent: v }))} 
+                    />
+                    <InputGroup 
+                      label="Lender Origination Fee ($)" 
+                      value={params.originationFee} 
+                      prefix={currency.symbol} 
+                      onChange={(v: number) => setParams(p => ({ ...p, originationFee: v }))} 
+                    />
+                  </div>
+
+                  <InputGroup 
+                    label="Other Prepaid Finance Charges ($)" 
+                    value={params.otherPrepaidFinanceCharges} 
+                    prefix={currency.symbol} 
+                    onChange={(v: number) => setParams(p => ({ ...p, otherPrepaidFinanceCharges: v }))} 
+                  />
+
+                  {/* APR Results Panel */}
+                  <div className="p-4 bg-slate-900 text-white rounded-2xl space-y-3 shadow-md">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs uppercase font-bold text-indigo-300">Actuarial Regulation Z APR</span>
+                      <span className="text-lg font-black text-emerald-400 font-mono">
+                        {res.hasFeesOrMi ? `${res.regulationZApr.toFixed(3)}%` : `${params.rate}%`}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-300 space-y-1 font-mono">
+                      <div className="flex justify-between">
+                        <span>Label:</span>
+                        <span className="font-sans font-medium text-slate-200">{res.aprLabel}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Base Note Rate:</span>
+                        <span>{params.rate}%</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Prepaid Finance Charges:</span>
+                        <span>{formatDetailed(res.totalPrepaidFinanceCharges)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Amount Financed:</span>
+                        <span>{formatDetailed(res.amountFinanced)}</span>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-slate-400 pt-1 border-t border-slate-800">
+                      Note: This is an analytical estimate computed via Regulation Z Appendix J actuarial solving. This is not a formal Loan Estimate or Closing Disclosure disclosure-grade APR.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {activeSubTab === 'extra' && (
                 <div className="space-y-5 sm:space-y-6">
                   <div className="p-3.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl text-xs text-emerald-900 dark:text-emerald-200 leading-relaxed">
@@ -505,7 +840,30 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
                   </div>
 
                   <InputGroup label="Extra Monthly Principal" value={params.extraMonthly} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, extraMonthly: v }))} />
-                  <InputGroup label="Extra Annual Principal" value={params.extraYearly} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, extraYearly: v }))} />
+                  
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <InputGroup label="Extra Annual Principal" value={params.extraYearly} prefix={currency.symbol} onChange={(v: number) => setParams(p => ({ ...p, extraYearly: v }))} />
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+                        Month Applied Each Year
+                      </label>
+                      <select
+                        value={params.extraYearlyMonth}
+                        onChange={(e) => setParams(p => ({ ...p, extraYearlyMonth: Number(e.target.value) }))}
+                        className="w-full min-h-[44px] bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-xl py-2.5 px-3 outline-none text-slate-900 dark:text-white text-xs font-bold focus-visible:ring-2 focus-visible:ring-indigo-500"
+                      >
+                        <option value={0}>Not applied (select a month)</option>
+                        {Array.from({ length: 12 }, (_, i) => (
+                          <option key={i + 1} value={i + 1}>
+                            Month {i + 1} ({['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][i]})
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                        Extra annual payment is applied only if a month is chosen.
+                      </span>
+                    </div>
+                  </div>
 
                   <div className="pt-4 border-t border-slate-200 dark:border-slate-700 space-y-4">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">One-Time Extra Lump Sum</h4>
@@ -534,6 +892,18 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
 
         {/* Right Column: Instant Hero Metric & Itemized Breakdown */}
         <div className="lg:col-span-7 space-y-6">
+          {/* Regulatory & Conforming Limit Warnings Banner */}
+          {res.warnings && res.warnings.length > 0 && (
+            <div className="p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-2xl space-y-2">
+              {res.warnings.map((warn: string, idx: number) => (
+                <div key={idx} className="flex items-start gap-2.5 text-xs text-amber-900 dark:text-amber-200 font-medium">
+                  <ShieldAlert size={16} className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <span>{warn}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Instant Hero Metric: Big Monthly Payment Card */}
           <div className="bg-gradient-to-br from-slate-900 via-indigo-950 to-blue-950 text-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl shadow-xl border border-indigo-900/50 space-y-5 sm:space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -575,7 +945,7 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
                 <span className="font-black text-white text-sm truncate block">{format(res.schedule[0]?.insurance || 0)}</span>
               </div>
               <div className="bg-white/10 p-2.5 rounded-xl">
-                <span className="text-indigo-200 text-xs uppercase font-bold block truncate">PMI &amp; HOA</span>
+                <span className="text-indigo-200 text-xs uppercase font-bold block truncate">PMI / MIP / HOA</span>
                 <span className="font-black text-white text-sm truncate block">{format((res.schedule[0]?.pmi || 0) + (res.schedule[0]?.hoa || 0))}</span>
               </div>
               {(res.schedule[0]?.other || 0) > 0 && (
@@ -621,9 +991,9 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
 
           {/* Key Summary Metrics */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-            <MetricCard label="Loan Principal" value={format(res.loanAmount)} subtext="Initial borrowed amount" icon={ShieldAlert} color="bg-slate-800 dark:bg-slate-700" />
+            <MetricCard label="Loan Principal" value={format(res.loanAmount)} subtext={res.isUpfrontFeeFinanced ? `Includes ${format(res.upfrontFee)} fee` : "Initial borrowed amount"} icon={ShieldAlert} color="bg-slate-800 dark:bg-slate-700" />
+            <MetricCard label="Regulation Z APR" value={res.hasFeesOrMi ? `${res.regulationZApr.toFixed(3)}%` : `${params.rate}%`} subtext={res.hasFeesOrMi ? "Includes fees & MI" : "Equals note rate"} icon={RefreshCw} color="bg-indigo-600" />
             <MetricCard label="Total Interest" value={format(res.totalInterest)} subtext="Total financing cost" icon={Landmark} color="bg-rose-600" />
-            <MetricCard label="Total Principal & Interest" value={format(res.totalPayment)} subtext="Total loan repayment" icon={RefreshCw} color="bg-indigo-600" />
             <MetricCard label="Total with Escrow" value={format(res.totalOutOfPocket)} subtext="Includes taxes & ins" icon={Wallet} color="bg-emerald-600" />
           </div>
           
@@ -1044,6 +1414,7 @@ function MortgageModule({ currency, onNavigate }: { currency: any; onNavigate?: 
         </GlassCard>
       </div>
 
+      <CalculatorDisclaimer />
     </div>
   );
 }
@@ -1102,6 +1473,7 @@ function InvestmentModule({ currency }: { currency: any }) {
             { key: 'balance', label: 'Net Worth', format },
           ]}
         />
+        <CalculatorDisclaimer />
       </div>
     </div>
   );
@@ -1190,17 +1562,54 @@ function DebtModule({ currency }: { currency: any }) {
             </div>
             <div className="p-4 bg-blue-50 dark:bg-blue-950/40 rounded-xl text-xs text-blue-900 dark:text-blue-100 leading-relaxed flex gap-3 border border-blue-200 dark:border-blue-800">
               <Info size={20} className="shrink-0 text-blue-600 dark:text-blue-400" aria-hidden="true" />
-              <span>{strategy === 'avalanche' ? "Avalanche strategy focuses extra payments on debts with the highest interest rates first, saving you the most money over time." : "Snowball strategy focuses on paying off the smallest balances first to build psychological momentum."}</span>
+              <div className="space-y-1">
+                <p className="font-semibold">{strategy === 'avalanche' ? "Avalanche strategy focuses extra payments on debts with the highest interest rates first, saving you the most money over time." : "Snowball strategy focuses on paying off the smallest balances first to build psychological momentum."}</p>
+                <p className="text-[11px] opacity-90">Interest Convention: Monthly rate = APR / 12, applied to current balance before monthly payments are deducted.</p>
+              </div>
             </div>
           </div>
         </GlassCard>
       </div>
 
       <div className="lg:col-span-7 space-y-8">
+        {res.status === 'NEVER_PAID_OFF' && (
+          <div className="p-4 bg-rose-50 dark:bg-rose-950/40 rounded-2xl border border-rose-200 dark:border-rose-800 text-xs text-rose-800 dark:text-rose-200 flex items-start gap-3">
+            <ShieldAlert size={20} className="shrink-0 text-rose-600 dark:text-rose-400 mt-0.5" aria-hidden="true" />
+            <div>
+              <p className="font-bold">Warning: Some debts cannot be paid off within 600 months</p>
+              <p className="mt-0.5">Minimum payments do not cover monthly interest on certain accounts, or the extra budget is insufficient.</p>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <MetricCard label="Time to Debt Free" value={`${res.monthsToPayoff} Months`} subtext={`~${(res.monthsToPayoff/12).toFixed(1)} Years`} icon={RefreshCw} color="bg-rose-600" />
+          <MetricCard label="Time to Debt Free" value={res.status === 'NEVER_PAID_OFF' ? 'Never' : `${res.monthsToPayoff} Months`} subtext={res.status === 'NEVER_PAID_OFF' ? 'Exceeds 600 months' : `~${(res.monthsToPayoff/12).toFixed(1)} Years`} icon={RefreshCw} color="bg-rose-600" />
           <MetricCard label="Total Interest Paid" value={format(res.totalInterest)} subtext="Over the payoff period" icon={Zap} color="bg-amber-600" />
         </div>
+
+        <GlassCard className="p-6 space-y-6">
+          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Debt Payoff Status & Milestone Months</h4>
+          <div className="space-y-3">
+            {res.debts.map(d => (
+              <div key={d.id} className="p-4 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-between gap-4">
+                <div>
+                  <p className="font-bold text-slate-900 dark:text-white text-sm">{d.name}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Initial: {format(d.balance)} @ {d.rate}% • Min: {format(d.minPayment)}</p>
+                  {d.warning && (
+                    <p className="text-xs font-semibold text-rose-600 dark:text-rose-400 mt-1 flex items-center gap-1">
+                      <ShieldAlert size={14} /> {d.warning}
+                    </p>
+                  )}
+                </div>
+                <div className="text-right">
+                  <span className={cn("inline-block px-3 py-1 rounded-full text-xs font-bold", d.paidOffMonth !== null ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200" : "bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-200")}>
+                    {d.paidOffMonth !== null ? `Paid Off: Month ${d.paidOffMonth}` : 'Not Paid Off'}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </GlassCard>
 
         <GlassCard className="p-6 lg:p-8 space-y-6">
           <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">Debt Reduction Curve</h4>
@@ -1222,179 +1631,7 @@ function DebtModule({ currency }: { currency: any }) {
             </ResponsiveContainer>
           </div>
         </GlassCard>
-      </div>
-    </div>
-  );
-}
-
-// --- Retirement (FIRE) Module ---
-function RetirementModule({ currency }: { currency: any }) {
-  const [params, setParams] = useState({ 
-    age: 30, 
-    savings: 50000, 
-    monthly: 2000, 
-    expenses: 40253, 
-    return: 7, 
-    swr: 4,
-    adjustForTaxes: false,
-    retirementTaxRate: 15
-  });
-
-  const res = useMemo(() => calculateRetirement({ 
-    currentAge: params.age, 
-    currentSavings: params.savings, 
-    monthlyContribution: params.monthly, 
-    annualExpenses: params.expenses, 
-    annualReturn: params.return, 
-    safeWithdrawalRate: params.swr,
-    adjustForTaxes: params.adjustForTaxes,
-    retirementTaxRatePercent: params.retirementTaxRate
-  }), [params]);
-
-  const format = (v: number) => `${currency.symbol}${new Intl.NumberFormat().format(Math.round(v))}`;
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-      <div className="lg:col-span-4 space-y-6">
-        <GlassCard className="p-6 space-y-6">
-          <h3 className="text-lg font-black flex items-center gap-2 text-slate-900 dark:text-white">
-            <Zap size={20} className="text-amber-500" aria-hidden="true" /> FIRE Strategy (Trinity 4% Rule)
-          </h3>
-          <div className="grid grid-cols-2 gap-4">
-            <InputGroup label="Current Age" value={params.age} onChange={(v: number) => setParams({...params, age: v})} />
-            <InputGroup label="Safe Withdrawal Rate" value={params.swr} suffix="%" step="0.25" onChange={(v: number) => setParams({...params, swr: v})} />
-          </div>
-          <InputGroup label="Current Savings" value={params.savings} prefix={currency.symbol} onChange={(v: number) => setParams({...params, savings: v})} />
-          <InputGroup label="Monthly Invested" value={params.monthly} prefix={currency.symbol} onChange={(v: number) => setParams({...params, monthly: v})} />
-          <InputGroup label="Annual Living Expenses" value={params.expenses} prefix={currency.symbol} onChange={(v: number) => setParams({...params, expenses: v})} />
-          <InputGroup label="Expected Investment Return (ROI)" value={params.return} suffix="%" step="0.5" onChange={(v: number) => setParams({...params, return: v})} />
-
-          {/* Tax-Adjusted FIRE Target Toggle & Setting */}
-          <div className="pt-4 border-t border-slate-200 dark:border-slate-700 space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">Tax-Adjusted FIRE Target</span>
-                <span className="text-xs text-slate-500 dark:text-slate-400">Account for taxes on pre-tax 401(k)/IRA</span>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={params.adjustForTaxes}
-                onClick={() => setParams(p => ({ ...p, adjustForTaxes: !p.adjustForTaxes }))}
-                className={cn(
-                  "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500",
-                  params.adjustForTaxes ? "bg-amber-500" : "bg-slate-300 dark:bg-slate-700"
-                )}
-              >
-                <span
-                  className={cn(
-                    "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
-                    params.adjustForTaxes ? "translate-x-5" : "translate-x-0"
-                  )}
-                />
-              </button>
-            </div>
-
-            {params.adjustForTaxes && (
-              <div className="pt-2">
-                <InputGroup 
-                  label="Expected Retirement Tax Bracket" 
-                  value={params.retirementTaxRate} 
-                  suffix="%" 
-                  step="1" 
-                  onChange={(v: number) => setParams(p => ({ ...p, retirementTaxRate: v }))} 
-                />
-                <p className="text-xs text-amber-700 dark:text-amber-400 mt-1 leading-relaxed">
-                  Gross annual withdrawal increases to <strong>{format(res.grossAnnualExpenses)}</strong> to provide <strong>{format(params.expenses)}</strong> net spend after {params.retirementTaxRate}% tax.
-                </p>
-              </div>
-            )}
-          </div>
-        </GlassCard>
-      </div>
-
-      <div className="lg:col-span-8 space-y-8">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <MetricCard 
-            label={params.adjustForTaxes ? "Gross FIRE Target (Tax-Adjusted)" : "FIRE Target (4% Rule)"} 
-            value={format(res.targetNetWorth)} 
-            subtext={params.adjustForTaxes ? `Standard net target: ${format(res.standardTargetNetWorth)}` : `25× annual expenses (${format(params.expenses)})`} 
-            icon={Landmark} 
-            color="bg-amber-600" 
-          />
-          <MetricCard 
-            label="Years to FIRE" 
-            value={`${res.yearsToFIRE.toFixed(1)} Years`} 
-            subtext={`Retire at age ${Math.round(res.fireAge)}`} 
-            icon={Compass} 
-            color="bg-blue-600" 
-          />
-          <MetricCard 
-            label="Monthly Spend" 
-            value={format(params.expenses / 12)} 
-            subtext="Required living budget" 
-            icon={Wallet} 
-            color="bg-slate-800 dark:bg-slate-700" 
-          />
-        </div>
-
-        <GlassCard className="p-6 lg:p-8 space-y-4">
-          <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
-            <div>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                FIRE Benchmark Formula ({params.swr}% SWR)
-              </h4>
-              <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
-                Baseline standard derived from the Trinity Study (25× annual living expenses for a 30+ year retirement)
-              </p>
-            </div>
-            <div className="px-3 py-1 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs font-black">
-              Target: {format(res.targetNetWorth)}
-            </div>
-          </div>
-
-          <div className="p-4 bg-slate-100 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2 text-xs font-medium text-slate-700 dark:text-slate-300">
-            <div className="flex justify-between py-1 border-b border-slate-200 dark:border-slate-700 font-mono">
-              <span>Standard 4% Rule Target:</span>
-              <span className="font-bold text-slate-900 dark:text-white">
-                {format(params.expenses)} ÷ {(params.swr / 100).toFixed(2)} = {format(res.standardTargetNetWorth)}
-              </span>
-            </div>
-            {params.adjustForTaxes && (
-              <div className="flex justify-between py-1 border-b border-slate-200 dark:border-slate-700 font-mono">
-                <span>Gross Tax-Adjusted Target ({params.retirementTaxRate}% tax):</span>
-                <span className="font-bold text-amber-600 dark:text-amber-400">
-                  {format(res.grossAnnualExpenses)} ÷ {(params.swr / 100).toFixed(2)} = {format(res.targetNetWorth)}
-                </span>
-              </div>
-            )}
-            <p className="text-xs text-slate-500 dark:text-slate-400 pt-1 leading-relaxed">
-              At a {params.swr}% withdrawal rate, your portfolio can sustainably generate {format(params.expenses)} in annual living expenses with high historical survival rates across multi-decade market cycles.
-            </p>
-          </div>
-        </GlassCard>
-
-        <GlassCard className="p-6 lg:p-8 space-y-6">
-          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">The Path to Freedom</h4>
-          <div className="h-80" aria-label="FIRE Net Worth Path Chart">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={res.timeline}>
-                <defs>
-                  <linearGradient id="colorFIRE" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.4}/>
-                    <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#cbd5e1" opacity={0.5} />
-                <XAxis dataKey="age" fontSize={11} stroke="#64748b" tickFormatter={a => `Age ${Math.round(a)}`} />
-                <YAxis hide />
-                <ReTooltip contentStyle={{ borderRadius: '12px', border: '1px solid #cbd5e1', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }} />
-                <Area type="monotone" dataKey="balance" stroke="#f59e0b" strokeWidth={3} fill="url(#colorFIRE)" name="Net Worth" />
-                <Line type="monotone" dataKey="target" stroke="#94a3b8" strokeDasharray="5 5" dot={false} strokeWidth={2} name="FIRE Target" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </GlassCard>
+        <CalculatorDisclaimer />
       </div>
     </div>
   );
@@ -2141,6 +2378,10 @@ export default function App() {
               {activeTab === 'admin' && <AdminModule cats={cats} subs={subs} />}
             </motion.div>
           </AnimatePresence>
+
+          {activeTab !== 'home' && activeTab !== 'admin' && (
+            <CalculatorDisclaimer />
+          )}
         </div>
       </main>
 
